@@ -58,7 +58,7 @@ CONF_WE_P4_PRESET = "we_p4_preset"
 
 # Defaults - Swings & Delays
 DEFAULT_COOLING_SWING = 2.0
-DEFAULT_HEATING_SWING = 2.0
+DEFAULT_HEATING_SWING = 1.0
 DEFAULT_COOLING_OFFSET = 3.0  # Safe offset for cooling (zero aux heat risk)
 DEFAULT_HEATING_OFFSET = 1.0  # Safe offset for heat pumps (<3°F prevents aux heat strips)
 DEFAULT_ERRAND_DELAY = 60  # minutes
