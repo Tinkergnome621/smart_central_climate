@@ -232,10 +232,12 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # Internal State Machine
         self._hvac_mode: HVACMode = HVACMode.COOL
         self._hvac_action: HVACAction = HVACAction.IDLE
+        self._last_active_hvac_mode: HVACMode = HVACMode.COOL  # Restores correct mode on turn_on
         self._target_temperature: float = self._preset_targets[HVACMode.COOL][PRESET_COMFORT]
         self._preset_mode: str = PRESET_COMFORT
         self._current_temperature: float | None = None
         self._active_sensor_source: str = "remote"  # "remote", "fallback_physical", or "emergency"
+        self._logged_sensor_fallback: bool = False
         self._last_scheduled_slot: str | None = None
 
         # Two-Way Dial Sync & Hardware State Tracking
@@ -309,6 +311,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         return {
             "remote_sensor": self._temp_sensor,
             "active_sensor_source": self._active_sensor_source,
+            "last_active_hvac_mode": self._last_active_hvac_mode,
             "target_climate": self._target_climate,
             "fan_entity": self._fan_entity,
             "schedule_enabled": self._enable_schedule,
@@ -339,6 +342,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             # Restore HVAC Mode
             if last_state.state in self.hvac_modes:
                 self._hvac_mode = HVACMode(last_state.state)
+                if last_state.state in (HVACMode.COOL, HVACMode.HEAT):
+                    self._last_active_hvac_mode = HVACMode(last_state.state)
+
+            saved_last_active = last_state.attributes.get("last_active_hvac_mode")
+            if saved_last_active in (HVACMode.COOL, HVACMode.HEAT):
+                self._last_active_hvac_mode = HVACMode(saved_last_active)
+
             # Restore Target Temperature
             prev_temp = last_state.attributes.get(ATTR_TEMPERATURE)
             if prev_temp is not None:
@@ -405,13 +415,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         # 9. Startup hook using HA async_at_started helper (works on both cold boot and live reload)
         async def _async_startup(_: HomeAssistant) -> None:
-            # If presence is configured and user is away, maintain Away preset!
-            if self._presence_sensor and not self._is_presence_home():
-                _LOGGER.info("Startup check: Nobody is home. Preserving Away mode.")
-                self._preset_mode = PRESET_AWAY
-                if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
-                    self._target_temperature = self._preset_targets[self._hvac_mode][PRESET_AWAY]
-            elif self._enable_schedule and self._preset_mode not in (PRESET_VACATION, PRESET_NONE):
+            # Preserve Vacation mode and manual holds strictly on reboot!
+            if self._preset_mode in (PRESET_VACATION, PRESET_NONE):
+                _LOGGER.info("Startup check: Preserving active %s preset across restart.", self._preset_mode)
+            elif self._enable_schedule:
                 self._async_sync_schedule_to_current_time()
 
             await self._async_evaluate_regulation()
@@ -439,8 +446,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
     # --------------------------------------------------------------------------
 
     async def async_turn_on(self) -> None:
-        """Turn on the climate entity (standard HA service)."""
-        await self.async_set_hvac_mode(HVACMode.COOL)
+        """Turn on the climate entity (restores previous active Cool/Heat mode)."""
+        await self.async_set_hvac_mode(self._last_active_hvac_mode)
 
     async def async_turn_off(self) -> None:
         """Turn off the climate entity (standard HA service)."""
@@ -452,6 +459,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             return
 
         self._hvac_mode = hvac_mode
+        if hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
+            self._last_active_hvac_mode = hvac_mode
 
         if hvac_mode == HVACMode.OFF:
             self._hvac_action = HVACAction.OFF
@@ -483,7 +492,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         self._preset_mode = preset_mode
 
-        # If entering Comfort mode, start 60-minute Away Immunity Window
+        # If entering Comfort mode, start 60-minute Away Immunity Window (Pre-Cooling)
         if preset_mode == PRESET_COMFORT:
             self._async_start_immunity_window()
 
@@ -532,15 +541,19 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # Tier 1: Primary Remote Sensor Helper
         state = self.hass.states.get(self._temp_sensor)
         if state and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            # Check staleness using last_reported or last_updated (45m threshold)
+            # Check for completely dead/frozen sensor (2 hour threshold for steady afternoons)
             report_time = getattr(state, "last_reported", None) or getattr(state, "last_updated", None)
             is_stale = False
-            if report_time and (now - report_time) > timedelta(minutes=45):
+            if report_time and (now - report_time) > timedelta(minutes=120):
                 is_stale = True
 
             if not is_stale:
                 try:
-                    return float(state.state), "remote"
+                    val = float(state.state)
+                    if self._logged_sensor_fallback:
+                        _LOGGER.info("Remote sensor %s is online and active. Resuming Tier 1 tracking.", self._temp_sensor)
+                        self._logged_sensor_fallback = False
+                    return val, "remote"
                 except (ValueError, TypeError):
                     pass
 
@@ -551,13 +564,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if phys_temp is not None:
                 try:
                     val = float(phys_temp)
-                    _LOGGER.warning(
-                        "Remote sensor %s is unavailable or stale (>45m). "
-                        "Auto-failing over to physical thermostat %s built-in probe: %s°F.",
-                        self._temp_sensor,
-                        self._target_climate,
-                        val,
-                    )
+                    if not self._logged_sensor_fallback:
+                        _LOGGER.warning(
+                            "Remote sensor %s is unavailable or stale (>2h). "
+                            "Auto-failing over to physical thermostat %s built-in probe: %s°F.",
+                            self._temp_sensor,
+                            self._target_climate,
+                            val,
+                        )
+                        self._logged_sensor_fallback = True
                     return val, "fallback_physical"
                 except (ValueError, TypeError):
                     pass
@@ -605,13 +620,9 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._last_scheduled_slot = f"{day_type} Slot {slot_number} ({slot_time})"
 
         # Presence check:
-        # 1. If slot is Away but user is actually Home: don't force Away
+        # If slot is Away but user is actually Home: don't force Away
         if slot_preset == PRESET_AWAY and self._is_presence_home():
             slot_preset = PRESET_COMFORT
-
-        # 2. If user is NOT home and no pre-cooling immunity: keep Away!
-        if self._presence_sensor and not self._is_presence_home() and self._immunity_timer_cancel is None:
-            slot_preset = PRESET_AWAY
 
         _LOGGER.info("Synced schedule to current time: %s -> %s", self._last_scheduled_slot, slot_preset)
         self.hass.async_create_task(self.async_set_preset_mode(slot_preset))
@@ -635,16 +646,12 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     _LOGGER.info("Schedule triggered: %s -> setting preset %s", slot_name, slot_preset)
                     self._last_scheduled_slot = slot_name
 
-                    # Presence-Aware: If slot is Away but user is actually Home
+                    # Presence-Aware: If slot is Away but user is actually Home (e.g. sick day, holiday)
                     if slot_preset == PRESET_AWAY and self._is_presence_home():
                         _LOGGER.info("Schedule called for Away, but presence is Home. Staying in Comfort.")
                         slot_preset = PRESET_COMFORT
 
-                    # If slot called for Comfort/Sleep but user is away and immunity not active
-                    if self._presence_sensor and not self._is_presence_home() and self._immunity_timer_cancel is None:
-                        _LOGGER.info("Schedule triggered %s, but nobody is home. Staying in Away.", slot_preset)
-                        slot_preset = PRESET_AWAY
-
+                    # Apply preset (If Comfort triggers, it automatically activates Pre-Cooling Immunity)
                     await self.async_set_preset_mode(slot_preset)
                 break
 
@@ -672,16 +679,18 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     async def _async_evaluate_regulation(self) -> None:
         """Evaluate temperature and control the physical thermostat."""
+        # Always read temperature first so UI display and attributes remain active even when OFF!
+        cur_temp, source = self._get_current_effective_temperature()
+        self._current_temperature = cur_temp
+        self._active_sensor_source = source
+
         if self._hvac_mode == HVACMode.OFF:
             physical_state = self.hass.states.get(self._target_climate)
             cur_mode = physical_state.state if physical_state else None
             if cur_mode != HVACMode.OFF or self._last_sent_physical_mode != HVACMode.OFF:
                 await self._async_call_physical_off()
+            self.async_write_ha_state()
             return
-
-        cur_temp, source = self._get_current_effective_temperature()
-        self._current_temperature = cur_temp
-        self._active_sensor_source = source
 
         # Tier 3 Emergency Failsafe Hand-off: If both remote and physical sensors are offline!
         if cur_temp is None or source == "emergency":
@@ -904,6 +913,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             _LOGGER.info("Physical thermostat was manually switched to %s at the wall (Season changeover).", new_state.state)
             self._hvac_mode = HVACMode(new_state.state)
             self._last_sent_physical_mode = new_state.state
+            self._last_active_hvac_mode = HVACMode(new_state.state)
 
             # Sync setpoint for the new season/mode from preset targets
             if self._preset_mode in self._preset_targets.get(self._hvac_mode, {}):
