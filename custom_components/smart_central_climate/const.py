@@ -8,11 +8,12 @@ CONF_FAN_ENTITY = "fan_entity"
 CONF_TEMP_SENSOR = "temperature_sensor"
 CONF_PRESENCE_SENSOR = "presence_sensor"
 
-# Hysteresis & Timers
+# Hysteresis, Timers & Safety
 CONF_COOLING_SWING = "cooling_swing"
 CONF_HEATING_SWING = "heating_swing"
 CONF_ERRAND_DELAY = "errand_delay"
 CONF_IMMUNITY_DURATION = "immunity_duration"
+CONF_MIN_CYCLE_DURATION = "min_cycle_duration"  # Minimum on/off time for compressor
 
 # Setpoint Presets
 CONF_COMFORT_COOL = "comfort_cool"
@@ -54,10 +55,11 @@ CONF_WE_P4_TIME = "we_p4_time"
 CONF_WE_P4_PRESET = "we_p4_preset"
 
 # Defaults - Swings & Delays
-DEFAULT_COOLING_SWING = 3.0
-DEFAULT_HEATING_SWING = 3.0
+DEFAULT_COOLING_SWING = 2.0
+DEFAULT_HEATING_SWING = 2.0
 DEFAULT_ERRAND_DELAY = 60  # minutes
 DEFAULT_IMMUNITY_DURATION = 60  # minutes
+DEFAULT_MIN_CYCLE_DURATION = 5  # minutes (compressor protection)
 
 # Defaults - Temperatures
 DEFAULT_COMFORT_COOL = 72.0
