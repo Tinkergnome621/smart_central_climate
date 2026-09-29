@@ -238,6 +238,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._current_temperature: float | None = None
         self._active_sensor_source: str = "remote"  # "remote", "fallback_physical", or "emergency"
         self._logged_sensor_fallback: bool = False
+        self._logged_emergency_fallback: bool = False
         self._last_scheduled_slot: str | None = None
 
         # Two-Way Dial Sync & Hardware State Tracking
@@ -694,14 +695,18 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         # Tier 3 Emergency Failsafe Hand-off: If both remote and physical sensors are offline!
         if cur_temp is None or source == "emergency":
-            _LOGGER.error(
-                "Both sensors offline! Engaging Tier 3 failsafe: Handing local control to physical thermostat at target %s°F.",
-                self._target_temperature,
-            )
+            if not self._logged_emergency_fallback:
+                _LOGGER.error(
+                    "Both sensors offline! Engaging Tier 3 failsafe: Handing local control to physical thermostat at target %s°F.",
+                    self._target_temperature,
+                )
+                self._logged_emergency_fallback = True
             await self._async_call_physical_safe_handoff(self._target_temperature)
             self._hvac_action = HVACAction.IDLE
             self.async_write_ha_state()
             return
+
+        self._logged_emergency_fallback = False
 
         now = dt_util.utcnow()
         min_cycle = timedelta(minutes=self._min_cycle_duration)
@@ -1048,6 +1053,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self._immunity_timer_cancel = None
             self._immunity_timer_end = None
             _LOGGER.info("Pre-cooling immunity window expired.")
+            # If user is still not home when pre-cooling immunity ends, safely revert to Away!
+            if self._presence_sensor and not self._is_presence_home() and self._preset_mode != PRESET_VACATION:
+                _LOGGER.info("Pre-cooling immunity expired and user is not home. Shifting to Away preset.")
+                self.hass.async_create_task(self.async_set_preset_mode(PRESET_AWAY))
             self.async_write_ha_state()
 
         self._immunity_timer_cancel = async_call_later(
