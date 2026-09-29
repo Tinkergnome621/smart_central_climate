@@ -18,6 +18,7 @@ from .const import (
     CONF_HEATING_SWING,
     CONF_ERRAND_DELAY,
     CONF_IMMUNITY_DURATION,
+    CONF_MIN_CYCLE_DURATION,
     CONF_COMFORT_COOL,
     CONF_COMFORT_HEAT,
     CONF_ECO_COOL,
@@ -51,6 +52,7 @@ from .const import (
     DEFAULT_HEATING_SWING,
     DEFAULT_ERRAND_DELAY,
     DEFAULT_IMMUNITY_DURATION,
+    DEFAULT_MIN_CYCLE_DURATION,
     DEFAULT_COMFORT_COOL,
     DEFAULT_COMFORT_HEAT,
     DEFAULT_ECO_COOL,
@@ -140,6 +142,7 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_COOLING_SWING, default=DEFAULT_COOLING_SWING): vol.Coerce(float),
                 vol.Required(CONF_HEATING_SWING, default=DEFAULT_HEATING_SWING): vol.Coerce(float),
+                vol.Required(CONF_MIN_CYCLE_DURATION, default=DEFAULT_MIN_CYCLE_DURATION): vol.Coerce(int),
                 vol.Required(CONF_ERRAND_DELAY, default=DEFAULT_ERRAND_DELAY): vol.Coerce(int),
                 vol.Required(CONF_IMMUNITY_DURATION, default=DEFAULT_IMMUNITY_DURATION): vol.Coerce(int),
                 vol.Required(CONF_COMFORT_COOL, default=DEFAULT_COMFORT_COOL): vol.Coerce(float),
@@ -150,6 +153,8 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_AWAY_HEAT, default=DEFAULT_AWAY_HEAT): vol.Coerce(float),
                 vol.Required(CONF_SLEEP_COOL, default=DEFAULT_SLEEP_COOL): vol.Coerce(float),
                 vol.Required(CONF_SLEEP_HEAT, default=DEFAULT_SLEEP_HEAT): vol.Coerce(float),
+                vol.Required(CONF_BOOST_COOL, default=DEFAULT_BOOST_COOL): vol.Coerce(float),
+                vol.Required(CONF_BOOST_HEAT, default=DEFAULT_BOOST_HEAT): vol.Coerce(float),
                 vol.Required(CONF_VACATION_COOL, default=DEFAULT_VACATION_COOL): vol.Coerce(float),
                 vol.Required(CONF_VACATION_HEAT, default=DEFAULT_VACATION_HEAT): vol.Coerce(float),
             }
@@ -215,21 +220,21 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Get the options flow to modify settings anytime."""
-        return SmartCentralClimateOptionsFlow(config_entry)
+        return SmartCentralClimateOptionsFlow()
 
 
 class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
     """Handle options menu to modify temperatures, schedules, and delays anytime."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
-        self._options: dict[str, Any] = {**config_entry.data, **config_entry.options}
+        self._options: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Menu for options."""
+        self._options = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_menu(
             step_id="init",
             menu_options=["temperatures", "weekday_schedule", "weekend_schedule", "presence_timers"],
@@ -256,6 +261,8 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_AWAY_HEAT, default=cfg.get(CONF_AWAY_HEAT, DEFAULT_AWAY_HEAT)): vol.Coerce(float),
                 vol.Required(CONF_SLEEP_COOL, default=cfg.get(CONF_SLEEP_COOL, DEFAULT_SLEEP_COOL)): vol.Coerce(float),
                 vol.Required(CONF_SLEEP_HEAT, default=cfg.get(CONF_SLEEP_HEAT, DEFAULT_SLEEP_HEAT)): vol.Coerce(float),
+                vol.Required(CONF_BOOST_COOL, default=cfg.get(CONF_BOOST_COOL, DEFAULT_BOOST_COOL)): vol.Coerce(float),
+                vol.Required(CONF_BOOST_HEAT, default=cfg.get(CONF_BOOST_HEAT, DEFAULT_BOOST_HEAT)): vol.Coerce(float),
                 vol.Required(CONF_VACATION_COOL, default=cfg.get(CONF_VACATION_COOL, DEFAULT_VACATION_COOL)): vol.Coerce(float),
                 vol.Required(CONF_VACATION_HEAT, default=cfg.get(CONF_VACATION_HEAT, DEFAULT_VACATION_HEAT)): vol.Coerce(float),
             }
@@ -265,7 +272,7 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
     async def async_step_weekday_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Modify Monday - Friday 4-Slot Schedule."""
+        """Modify Monday – Friday 4-Slot Schedule."""
         if user_input is not None:
             self._options.update(user_input)
             return self.async_create_entry(title="", data=self._options)
@@ -297,7 +304,7 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
     async def async_step_weekend_schedule(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Modify Saturday - Sunday 4-Slot Schedule."""
+        """Modify Saturday – Sunday 4-Slot Schedule."""
         if user_input is not None:
             self._options.update(user_input)
             return self.async_create_entry(title="", data=self._options)
@@ -328,7 +335,7 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
     async def async_step_presence_timers(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Modify Errand Grace Delay and Away Immunity Window."""
+        """Modify Errand Grace Delay, Away Immunity Window, and Compressor Safety."""
         if user_input is not None:
             self._options.update(user_input)
             return self.async_create_entry(title="", data=self._options)
@@ -338,6 +345,7 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required(CONF_ERRAND_DELAY, default=cfg.get(CONF_ERRAND_DELAY, DEFAULT_ERRAND_DELAY)): vol.Coerce(int),
                 vol.Required(CONF_IMMUNITY_DURATION, default=cfg.get(CONF_IMMUNITY_DURATION, DEFAULT_IMMUNITY_DURATION)): vol.Coerce(int),
+                vol.Required(CONF_MIN_CYCLE_DURATION, default=cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_DURATION)): vol.Coerce(int),
             }
         )
         return self.async_show_form(step_id="presence_timers", data_schema=schema)
