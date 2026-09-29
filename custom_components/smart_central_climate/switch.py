@@ -7,7 +7,8 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity, SwitchDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
@@ -22,6 +23,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Vacation Mode switch entity."""
     entity = SmartCentralVacationSwitch(hass, entry)
+    # Store switch reference in hass.data
+    hass.data[DOMAIN][entry.entry_id]["switch_entity"] = entity
     async_add_entities([entity])
 
 
@@ -31,49 +34,38 @@ class SmartCentralVacationSwitch(SwitchEntity):
     _attr_has_entity_name = True
     _attr_device_class = SwitchDeviceClass.SWITCH
     _attr_icon = "mdi:airplane"
+    _attr_name = "Vacation Mode"
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the switch."""
         self.hass = hass
         self.entry = entry
-        name = entry.data.get(CONF_NAME, "Smart Central A/C")
-        self._attr_name = "Vacation Mode"
         self._attr_unique_id = f"{entry.entry_id}_vacation_mode"
-        self._is_on = False
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.data.get(CONF_NAME, "Smart Central A/C"),
+            manufacturer="Smart Central Climate",
+            model="Central A/C & Heat Pump Controller",
+        )
 
     @property
     def is_on(self) -> bool:
-        """Return True if Vacation Mode is active."""
-        # Query climate entity state directly if available
-        climate_entity_id = f"climate.{self.entry.title.lower().replace(' ', '_')}"
-        state = self.hass.states.get(climate_entity_id)
-        if state and state.attributes.get("preset_mode") == "vacation":
-            return True
-        return self._is_on
+        """Return True if Vacation Mode is active on the climate entity."""
+        climate_entity = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id, {}).get("climate_entity")
+        if climate_entity:
+            return climate_entity.preset_mode == "vacation"
+        return False
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn on Vacation Mode."""
-        self._is_on = True
+        climate_entity = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id, {}).get("climate_entity")
+        if climate_entity:
+            await climate_entity.async_set_preset_mode("vacation")
         self.async_write_ha_state()
-
-        # Call climate.set_preset_mode vacation
-        climate_entity_id = f"climate.{self.entry.title.lower().replace(' ', '_')}"
-        await self.hass.services.async_call(
-            "climate",
-            "set_preset_mode",
-            {"entity_id": climate_entity_id, "preset_mode": "vacation"},
-            blocking=False,
-        )
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off Vacation Mode and resume normal schedule."""
-        self._is_on = False
+        """Turn off Vacation Mode and resume normal scheduled preset."""
+        climate_entity = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id, {}).get("climate_entity")
+        if climate_entity:
+            await climate_entity.async_set_preset_mode("comfort")
         self.async_write_ha_state()
-
-        climate_entity_id = f"climate.{self.entry.title.lower().replace(' ', '_')}"
-        await self.hass.services.async_call(
-            "climate",
-            "set_preset_mode",
-            {"entity_id": climate_entity_id, "preset_mode": "comfort"},
-            blocking=False,
-        )
