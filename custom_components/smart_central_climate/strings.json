@@ -1,0 +1,128 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Central Climate Setup",
+        "description": "Connect your physical thermostat, optional blower fan, remote temperature helper, and presence tracker.",
+        "data": {
+          "name": "Integration Name",
+          "target_climate": "Physical Thermostat (e.g. Meross)",
+          "fan_entity": "Blower Fan Entity (Optional, e.g. Matter fan)",
+          "temperature_sensor": "Remote Temperature Sensor (e.g. house temp helper)",
+          "presence_sensor": "Presence Sensor / Person (Optional)"
+        }
+      },
+      "presets": {
+        "title": "Setpoints, Swings & Vacation",
+        "description": "Configure your default temperatures, swings, and vacation hold targets.",
+        "data": {
+          "cooling_swing": "Cooling Swing (°F)",
+          "heating_swing": "Heating Swing (°F)",
+          "errand_delay": "Errand Grace Delay (Minutes before Away)",
+          "immunity_duration": "Pre-Cooling Away Immunity (Minutes)",
+          "comfort_cool": "Comfort (Cool) °F",
+          "comfort_heat": "Comfort (Heat) °F",
+          "eco_cool": "Eco (Cool) °F",
+          "eco_heat": "Eco (Heat) °F",
+          "away_cool": "Away (Cool) °F",
+          "away_heat": "Away (Heat) °F",
+          "sleep_cool": "Sleep (Cool) °F",
+          "sleep_heat": "Sleep (Heat) °F",
+          "vacation_cool": "Vacation (Cool) °F",
+          "vacation_heat": "Vacation (Heat) °F"
+        }
+      },
+      "schedules": {
+        "title": "4-Slot Daily Schedules",
+        "description": "Configure the 4 scheduled time slots for Monday–Friday and Saturday–Sunday.",
+        "data": {
+          "enable_schedule": "Enable Built-In Schedules",
+          "wd_p1_time": "Weekday Period 1 Time (Wake)",
+          "wd_p1_preset": "Weekday Period 1 Preset",
+          "wd_p2_time": "Weekday Period 2 Time (Day/Work)",
+          "wd_p2_preset": "Weekday Period 2 Preset",
+          "wd_p3_time": "Weekday Period 3 Time (Evening/Return)",
+          "wd_p3_preset": "Weekday Period 3 Preset",
+          "wd_p4_time": "Weekday Period 4 Time (Night/Sleep)",
+          "wd_p4_preset": "Weekday Period 4 Preset",
+          "we_p1_time": "Weekend Period 1 Time (Wake)",
+          "we_p1_preset": "Weekend Period 1 Preset",
+          "we_p2_time": "Weekend Period 2 Time (Day)",
+          "we_p2_preset": "Weekend Period 2 Preset",
+          "we_p3_time": "Weekend Period 3 Time (Evening)",
+          "we_p3_preset": "Weekend Period 3 Preset",
+          "we_p4_time": "Weekend Period 4 Time (Night/Sleep)",
+          "we_p4_preset": "Weekend Period 4 Preset"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Smart Central Climate Settings",
+        "menu_options": {
+          "temperatures": "Temperature Presets, Swings & Vacation",
+          "weekday_schedule": "Monday – Friday Schedule (4 Slots)",
+          "weekend_schedule": "Saturday – Sunday Schedule (4 Slots)",
+          "presence_timers": "Errand Grace Delay & Away Immunity"
+        }
+      },
+      "temperatures": {
+        "title": "Temperature Presets & Swings",
+        "description": "Adjust your setpoints, hysteresis swings, or vacation temperatures.",
+        "data": {
+          "cooling_swing": "Cooling Swing (°F)",
+          "heating_swing": "Heating Swing (°F)",
+          "comfort_cool": "Comfort (Cool) °F",
+          "comfort_heat": "Comfort (Heat) °F",
+          "eco_cool": "Eco (Cool) °F",
+          "eco_heat": "Eco (Heat) °F",
+          "away_cool": "Away (Cool) °F",
+          "away_heat": "Away (Heat) °F",
+          "sleep_cool": "Sleep (Cool) °F",
+          "sleep_heat": "Sleep (Heat) °F",
+          "vacation_cool": "Vacation (Cool) °F",
+          "vacation_heat": "Vacation (Heat) °F"
+        }
+      },
+      "weekday_schedule": {
+        "title": "Monday – Friday Schedule",
+        "description": "Set the times and presets for your 4 weekday periods.",
+        "data": {
+          "enable_schedule": "Enable Built-In Schedules",
+          "wd_p1_time": "Period 1 Time (Morning/Wake)",
+          "wd_p1_preset": "Period 1 Preset",
+          "wd_p2_time": "Period 2 Time (Day/Work)",
+          "wd_p2_preset": "Period 2 Preset",
+          "wd_p3_time": "Period 3 Time (Evening/Pre-Cool)",
+          "wd_p3_preset": "Period 3 Preset",
+          "wd_p4_time": "Period 4 Time (Night/Sleep)",
+          "wd_p4_preset": "Period 4 Preset"
+        }
+      },
+      "weekend_schedule": {
+        "title": "Saturday – Sunday Schedule",
+        "description": "Set the times and presets for your 4 weekend periods.",
+        "data": {
+          "we_p1_time": "Period 1 Time (Morning/Wake)",
+          "we_p1_preset": "Period 1 Preset",
+          "we_p2_time": "Period 2 Time (Day)",
+          "we_p2_preset": "Period 2 Preset",
+          "we_p3_time": "Period 3 Time (Evening)",
+          "we_p3_preset": "Period 3 Preset",
+          "we_p4_time": "Period 4 Time (Night/Sleep)",
+          "we_p4_preset": "Period 4 Preset"
+        }
+      },
+      "presence_timers": {
+        "title": "Presence & Immunity Timers",
+        "description": "Adjust the errand grace period and the pre-cooling away immunity lockout.",
+        "data": {
+          "errand_delay": "Errand Grace Delay (Minutes before Away)",
+          "immunity_duration": "Pre-Cooling Away Immunity (Minutes)"
+        }
+      }
+    }
+  }
+}
