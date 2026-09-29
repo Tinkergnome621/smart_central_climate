@@ -16,6 +16,8 @@ from .const import (
     CONF_PRESENCE_SENSOR,
     CONF_COOLING_SWING,
     CONF_HEATING_SWING,
+    CONF_COOLING_OFFSET,
+    CONF_HEATING_OFFSET,
     CONF_ERRAND_DELAY,
     CONF_IMMUNITY_DURATION,
     CONF_MIN_CYCLE_DURATION,
@@ -50,6 +52,8 @@ from .const import (
     CONF_WE_P4_PRESET,
     DEFAULT_COOLING_SWING,
     DEFAULT_HEATING_SWING,
+    DEFAULT_COOLING_OFFSET,
+    DEFAULT_HEATING_OFFSET,
     DEFAULT_ERRAND_DELAY,
     DEFAULT_IMMUNITY_DURATION,
     DEFAULT_MIN_CYCLE_DURATION,
@@ -133,7 +137,7 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_presets(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Step 2: Base temperature setpoints and swings."""
+        """Step 2: Base temperature setpoints, swings, and offsets."""
         if user_input is not None:
             self._data.update(user_input)
             return await self.async_step_schedules()
@@ -142,6 +146,8 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_COOLING_SWING, default=DEFAULT_COOLING_SWING): vol.Coerce(float),
                 vol.Required(CONF_HEATING_SWING, default=DEFAULT_HEATING_SWING): vol.Coerce(float),
+                vol.Required(CONF_COOLING_OFFSET, default=DEFAULT_COOLING_OFFSET): vol.Coerce(float),
+                vol.Required(CONF_HEATING_OFFSET, default=DEFAULT_HEATING_OFFSET): vol.Coerce(float),
                 vol.Required(CONF_MIN_CYCLE_DURATION, default=DEFAULT_MIN_CYCLE_DURATION): vol.Coerce(int),
                 vol.Required(CONF_ERRAND_DELAY, default=DEFAULT_ERRAND_DELAY): vol.Coerce(int),
                 vol.Required(CONF_IMMUNITY_DURATION, default=DEFAULT_IMMUNITY_DURATION): vol.Coerce(int),
@@ -243,7 +249,7 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
     async def async_step_temperatures(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Modify temperature setpoints, swings, and vacation temperatures."""
+        """Modify temperature setpoints, swings, and offsets."""
         if user_input is not None:
             self._options.update(user_input)
             return self.async_create_entry(title="", data=self._options)
@@ -253,6 +259,8 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required(CONF_COOLING_SWING, default=cfg.get(CONF_COOLING_SWING, DEFAULT_COOLING_SWING)): vol.Coerce(float),
                 vol.Required(CONF_HEATING_SWING, default=cfg.get(CONF_HEATING_SWING, DEFAULT_HEATING_SWING)): vol.Coerce(float),
+                vol.Required(CONF_COOLING_OFFSET, default=cfg.get(CONF_COOLING_OFFSET, DEFAULT_COOLING_OFFSET)): vol.Coerce(float),
+                vol.Required(CONF_HEATING_OFFSET, default=cfg.get(CONF_HEATING_OFFSET, DEFAULT_HEATING_OFFSET)): vol.Coerce(float),
                 vol.Required(CONF_COMFORT_COOL, default=cfg.get(CONF_COMFORT_COOL, DEFAULT_COMFORT_COOL)): vol.Coerce(float),
                 vol.Required(CONF_COMFORT_HEAT, default=cfg.get(CONF_COMFORT_HEAT, DEFAULT_COMFORT_HEAT)): vol.Coerce(float),
                 vol.Required(CONF_ECO_COOL, default=cfg.get(CONF_ECO_COOL, DEFAULT_ECO_COOL)): vol.Coerce(float),
