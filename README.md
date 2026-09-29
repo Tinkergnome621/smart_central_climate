@@ -1,27 +1,44 @@
 # Smart Central Climate
 
-A custom Home Assistant integration designed specifically for **Central A/C and Heat Pump Systems**. It wraps your physical smart thermostat (like Meross Matter, Nest, Ecobee, Honeywell, Z-Wave) and links it with remote room temperature sensors, smart presence grace periods, built-in 4-slot daily schedules, vacation mode, compressor protection, and HVAC-safe regulation.
+A custom Home Assistant integration designed specifically for **Central A/C and Heat Pump Systems**. It wraps your physical smart thermostat (like Meross Matter, Nest, Ecobee, Honeywell, Z-Wave) and links it with remote room temperature sensors, smart presence grace periods, built-in 4-slot daily schedules, vacation mode, compressor protection, and 3-tier failsafe regulation.
 
 ---
 
 ## Key Features
 
+* 🛡️ **3-Tier Sensor Safety & Hardware Failover:**
+  * **Tier 1 (Normal):** Regulates HVAC based on your primary remote sensor (e.g. `sensor.average_house_temperature`).
+  * **Tier 2 (Auto-Failover):** If your remote sensor ever goes `unavailable`, `unknown`, or stops reporting for >45 minutes, the integration automatically falls back to reading ambient temperature directly from your physical thermostat's built-in probe.
+  * **Tier 3 (Graceful Degradation):** If both sensors fail, control is handed over to the physical thermostat at your exact target setpoint with 0°F offset. Your heating or cooling will **never** freeze or shut down unexpectedly.
+* ⚡ **Decoupled Offsets & Heat Pump Aux Protection:**
+  * **Cooling Dynamic Offset (Default: 3.0°F):** Ensures your hallway thermostat doesn't shut off before the rest of your house reaches target temperature. Completely safe with zero Aux heat risk.
+  * **Heating Dynamic Offset (Default: 1.0°F):** Limits the heating offset so the delta to your heat pump stays below 3.0°F, **preventing expensive auxiliary electric resistance heat strips** from engaging.
 * 🛡️ **Compressor Protection (Short-Cycle Prevention):** Enforces a configurable 5-minute minimum cycle run-time and off-time (`min_cycle_duration`). Protects compressor motors against premature wear and high head-pressure starts.
 * 🌡️ **True 1-Sided A/C Hysteresis:** Unlike generic dual-sided swings that freeze your home, cooling activates at `Target + Swing` (e.g. 74°F) and turns off at the exact target setpoint (72°F).
-* ⚡ **Heat Pump Safe (Aux Heat Prevention):** Applies a safe, dynamic $1.5^\circ\text{F}$ offset clamped to the thermostat's advertised min/max limits. Never commands large temperature jumps that would trigger expensive auxiliary electric resistance heat strips.
 * 🛑 **Native HVAC Fan Management (Auto by Default):** Allows the HVAC air handler / furnace board to cycle the blower automatically with the compressor over the Y wire. When idle, ensures any separate fan entity (`fan.*`) is switched off so the blower is never stuck running 24/7.
-* 🐕 **Safety Watchdog (Failsafe Protection):** Actively monitors your remote temperature sensor. If the sensor goes unavailable or stops reporting for more than 20 minutes while active, the integration automatically idles the HVAC system to prevent runaway cooling or heating.
 * 📅 **Built-in 4-Slot Daily Schedules:**
   * **Monday – Friday (4 Periods):** e.g., Wake (06:30), Work/Day (08:30), Return/Pre-Cool (17:00), Night/Sleep (22:30).
   * **Saturday – Sunday (4 Periods):** e.g., Wake (08:00), Day (11:00), Evening (17:30), Night/Sleep (23:00).
-  * Automatically catches up to the correct slot on startup, respects manual holds, and safely wraps around across midnight (including Friday night to Saturday morning transitions).
+  * Automatically catches up to the correct slot on startup, respects manual holds and away states, and safely wraps around across midnight.
 * ✈️ **Dedicated Vacation Mode:**
-  * One-tap Vacation preset and dedicated toggle switch (`switch.vacation_mode`).
-  * Suspends all schedules, presence triggers, and errand timers while maintaining deep energy-saving vacation hold temperatures (e.g. Cool: 82°F / Heat: 58°F). Turning it off automatically resumes the schedule slot for the current time of day.
-* 🤝 **Two-Way Wall Dial Sync:** If someone physically turns the dial on the wall unit or flips the wall switch OFF, `smart_central_climate` catches the change and syncs its state without fighting back or misinterpreting routine idle states.
+  * One-tap Vacation preset and dedicated toggle switch (`switch.<integration_name>_vacation_mode`).
+  * Suspends all schedules, presence triggers, and errand timers while maintaining deep energy-saving vacation hold temperatures (e.g. Cool: 82°F / Heat: 58°F). Turning the switch off automatically resumes the schedule slot for the current time of day.
+* 🤝 **Two-Way Wall Dial Sync & Season Changeover:** If someone physically turns the dial on the wall unit or flips the wall switch between Heat and Cool, `smart_central_climate` catches the change and syncs its state cleanly without fighting back.
 * ⏱️ **Smart Away (Errand Grace Period):** Leaving home starts a configurable grace timer (default: 60 minutes). Quick trips to the grocery store will not disrupt your A/C; only if you remain away does it shift to Away setpoints.
 * 🛡️ **Pre-Cooling Schedule Immunity:** When your schedule triggers Comfort mode (e.g. at 17:00 / 5 PM), cooling engages and activates an Away Immunity Window (default: 60 minutes). Away presence checks are locked out so your home is chilled before you arrive.
-* 🎛️ **Full UI Configuration & Options Flow:** Set up directly in the Home Assistant UI, and adjust any setpoint, schedule slot, swing, or timer at any time under **Settings > Devices & Services > Configure**. Survives restarts and reloads seamlessly via `RestoreEntity`.
+* 🎛️ **Full UI Configuration & Options Flow:** Set up directly in the Home Assistant UI, and adjust any setpoint, schedule slot, swing, offset, or timer at any time under **Settings > Devices & Services > Configure**. Fully compatible with voice assistants and Lovelace power buttons via `climate.turn_on` and `climate.turn_off`.
+
+---
+
+## Best Practice: Setting Up Your Average House Temperature Helper
+
+For the most reliable temperature tracking, create a **Min/Max (Mean) Helper** in Home Assistant:
+1. Go to **Settings > Devices & Services > Helpers > Create Helper > Combine the state of several sensors (Min/Max)**.
+2. Select **Statistical characteristic:** `Mean` (Average).
+3. Select your room sensors (e.g. Living Room, Bedroom, Office).
+4. **Important Best Practice:** Also include your **physical thermostat's temperature sensor** in this list!
+   * Because your wall thermostat is hardwired to 24V power from your furnace/air handler C-wire, its sensor will never die.
+   * If battery-powered room sensors drop offline, Home Assistant's `mean` helper automatically ignores the offline sensors and calculates the average from the remaining active ones. Your average helper will never drop offline!
 
 ---
 
@@ -31,7 +48,7 @@ A custom Home Assistant integration designed specifically for **Central A/C and 
 2. Click the three dots in the top right > **Custom repositories**.
 3. Paste your repository URL: `https://github.com/Tinkergnome621/smart_central_climate`.
 4. Category: **Integration** > Click **Add**.
-5. Find **Smart Central Climate** in HACS and click **Download** (select version `v1.2.0`).
+5. Find **Smart Central Climate** in HACS and click **Download** (select version `v1.3.0`).
 6. Restart Home Assistant.
 
 ---
@@ -45,7 +62,7 @@ A custom Home Assistant integration designed specifically for **Central A/C and 
    * **Blower Fan Entity (Optional):** (e.g., `fan.hallway_thermostat`)
    * **Remote Temperature Sensor:** (e.g., `sensor.average_house_temperature`)
    * **Presence Sensor (Optional):** (e.g., `person.your_name`)
-4. Confirm your default temperatures, swings, and vacation hold setpoints.
+4. Confirm your default temperatures, swings, offsets, and vacation hold setpoints.
 5. Set your **4 Weekday** and **4 Weekend** schedule slots.
 6. Click **Submit**.
 
@@ -57,8 +74,8 @@ You never need to edit YAML or reinstall. In Home Assistant:
 1. Go to **Settings** > **Devices & Services**.
 2. Find **Smart Central Climate** and click **Configure**.
 3. Choose what to modify:
-   * **Temperature Presets, Swings & Vacation**
+   * **Temperature Presets, Swings & Offsets**
    * **Monday – Friday Schedule (4 Slots)**
    * **Saturday – Sunday Schedule (4 Slots)**
-   * **Errand Grace Delay & Away Immunity**
+   * **Presence, Timers & Safety**
 4. Adjust and click **Submit**.
