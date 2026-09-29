@@ -51,12 +51,14 @@ from .const import (
     CONF_BOOST_HEAT,
     CONF_COMFORT_COOL,
     CONF_COMFORT_HEAT,
+    CONF_COOLING_OFFSET,
     CONF_COOLING_SWING,
     CONF_ECO_COOL,
     CONF_ECO_HEAT,
     CONF_ENABLE_SCHEDULE,
     CONF_ERRAND_DELAY,
     CONF_FAN_ENTITY,
+    CONF_HEATING_OFFSET,
     CONF_HEATING_SWING,
     CONF_IMMUNITY_DURATION,
     CONF_MIN_CYCLE_DURATION,
@@ -89,11 +91,13 @@ from .const import (
     DEFAULT_BOOST_HEAT,
     DEFAULT_COMFORT_COOL,
     DEFAULT_COMFORT_HEAT,
+    DEFAULT_COOLING_OFFSET,
     DEFAULT_COOLING_SWING,
     DEFAULT_ECO_COOL,
     DEFAULT_ECO_HEAT,
     DEFAULT_ENABLE_SCHEDULE,
     DEFAULT_ERRAND_DELAY,
+    DEFAULT_HEATING_OFFSET,
     DEFAULT_HEATING_SWING,
     DEFAULT_IMMUNITY_DURATION,
     DEFAULT_MIN_CYCLE_DURATION,
@@ -145,7 +149,7 @@ async def async_setup_entry(
 
 
 class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
-    """Smart Central Climate entity featuring built-in 4-slot scheduling and two-way sync."""
+    """Smart Central Climate entity featuring built-in 4-slot scheduling, two-way sync, and 3-tier safety."""
 
     _attr_has_entity_name = True
     _attr_name = None
@@ -153,6 +157,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
     _attr_supported_features = (
         ClimateEntityFeature.TARGET_TEMPERATURE
         | ClimateEntityFeature.PRESET_MODE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
     )
     _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT]
 
@@ -177,9 +183,11 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._temp_sensor = cfg[CONF_TEMP_SENSOR]
         self._presence_sensor = cfg.get(CONF_PRESENCE_SENSOR)
 
-        # Hysteresis, Timers & Safety
+        # Hysteresis, Offsets, Timers & Safety
         self._cooling_swing = float(cfg.get(CONF_COOLING_SWING, DEFAULT_COOLING_SWING))
         self._heating_swing = float(cfg.get(CONF_HEATING_SWING, DEFAULT_HEATING_SWING))
+        self._cooling_offset = float(cfg.get(CONF_COOLING_OFFSET, DEFAULT_COOLING_OFFSET))
+        self._heating_offset = float(cfg.get(CONF_HEATING_OFFSET, DEFAULT_HEATING_OFFSET))
         self._errand_delay = int(cfg.get(CONF_ERRAND_DELAY, DEFAULT_ERRAND_DELAY))
         self._immunity_duration = int(cfg.get(CONF_IMMUNITY_DURATION, DEFAULT_IMMUNITY_DURATION))
         self._min_cycle_duration = int(cfg.get(CONF_MIN_CYCLE_DURATION, DEFAULT_MIN_CYCLE_DURATION))
@@ -227,6 +235,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._target_temperature: float = self._preset_targets[HVACMode.COOL][PRESET_COMFORT]
         self._preset_mode: str = PRESET_COMFORT
         self._current_temperature: float | None = None
+        self._active_sensor_source: str = "remote"  # "remote", "fallback_physical", or "emergency"
         self._last_scheduled_slot: str | None = None
 
         # Two-Way Dial Sync & Hardware State Tracking
@@ -237,7 +246,6 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # Safety & Cycle Timestamps
         self._last_cycle_start: datetime | None = None
         self._last_cycle_stop: datetime | None = None
-        self._last_temp_sensor_update: datetime | None = None
 
         # Errand Grace & Away Immunity Timers
         self._errand_timer_cancel = None
@@ -278,7 +286,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     @property
     def current_temperature(self) -> float | None:
-        """Return current temperature from the remote sensor helper."""
+        """Return current temperature from the active sensor."""
         return self._current_temperature
 
     @property
@@ -300,6 +308,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         return {
             "remote_sensor": self._temp_sensor,
+            "active_sensor_source": self._active_sensor_source,
             "target_climate": self._target_climate,
             "fan_entity": self._fan_entity,
             "schedule_enabled": self._enable_schedule,
@@ -311,6 +320,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             "immunity_minutes_remaining": immunity_remaining,
             "cooling_swing": self._cooling_swing,
             "heating_swing": self._heating_swing,
+            "cooling_offset": self._cooling_offset,
+            "heating_offset": self._heating_offset,
             "min_cycle_duration_minutes": self._min_cycle_duration,
         }
 
@@ -340,7 +351,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if prev_preset in SUPPORTED_PRESETS:
                 self._preset_mode = prev_preset
 
-        # 2. Inspect physical thermostat's initial state so routine pings aren't treated as manual changes
+        # 2. Inspect physical thermostat's initial state
         phys_state = self.hass.states.get(self._target_climate)
         if phys_state and phys_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             self._last_sent_physical_mode = phys_state.state
@@ -352,14 +363,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 except ValueError:
                     pass
 
-        # 3. Read initial temperature from remote sensor
-        state = self.hass.states.get(self._temp_sensor)
-        if state and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            try:
-                self._current_temperature = float(state.state)
-                self._last_temp_sensor_update = dt_util.utcnow()
-            except ValueError:
-                pass
+        # 3. Read initial temperature from 3-tier fallback hierarchy
+        cur_temp, source = self._get_current_effective_temperature()
+        self._current_temperature = cur_temp
+        self._active_sensor_source = source
 
         # 4. Track remote temperature sensor changes
         self._listeners.append(
@@ -389,7 +396,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 async_track_time_change(self.hass, self._async_check_schedule, second=0)
             )
 
-        # 8. Periodic 5-minute safety watchdog (checks for stale/unavailable remote sensor)
+        # 8. Periodic 5-minute safety watchdog
         self._listeners.append(
             async_track_time_interval(
                 self.hass, self._async_watchdog_check, timedelta(minutes=5)
@@ -398,9 +405,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         # 9. Startup hook using HA async_at_started helper (works on both cold boot and live reload)
         async def _async_startup(_: HomeAssistant) -> None:
-            # Sync schedule on startup only if schedule enabled, not on vacation, and not in manual override (PRESET_NONE)
-            if self._enable_schedule and self._preset_mode not in (PRESET_VACATION, PRESET_NONE):
+            # If presence is configured and user is away, maintain Away preset!
+            if self._presence_sensor and not self._is_presence_home():
+                _LOGGER.info("Startup check: Nobody is home. Preserving Away mode.")
+                self._preset_mode = PRESET_AWAY
+                if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
+                    self._target_temperature = self._preset_targets[self._hvac_mode][PRESET_AWAY]
+            elif self._enable_schedule and self._preset_mode not in (PRESET_VACATION, PRESET_NONE):
                 self._async_sync_schedule_to_current_time()
+
             await self._async_evaluate_regulation()
 
         async_at_started(self.hass, _async_startup)
@@ -422,8 +435,16 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         await super().async_will_remove_from_hass()
 
     # --------------------------------------------------------------------------
-    # Service Call Handlers
+    # Service Call Handlers & Feature Methods
     # --------------------------------------------------------------------------
+
+    async def async_turn_on(self) -> None:
+        """Turn on the climate entity (standard HA service)."""
+        await self.async_set_hvac_mode(HVACMode.COOL)
+
+    async def async_turn_off(self) -> None:
+        """Turn off the climate entity (standard HA service)."""
+        await self.async_set_hvac_mode(HVACMode.OFF)
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new HVAC mode."""
@@ -460,15 +481,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if preset_mode not in SUPPORTED_PRESETS:
             return
 
-        old_preset = self._preset_mode
         self._preset_mode = preset_mode
-
-        # If exiting Vacation mode, resume current scheduled slot
-        if old_preset == PRESET_VACATION and preset_mode != PRESET_VACATION:
-            if self._enable_schedule:
-                self._async_sync_schedule_to_current_time()
-                self._notify_switch()
-                return
 
         # If entering Comfort mode, start 60-minute Away Immunity Window
         if preset_mode == PRESET_COMFORT:
@@ -491,7 +504,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._notify_switch()
 
     async def async_resume_schedule(self) -> None:
-        """Resume normal schedule based on current time."""
+        """Resume normal schedule based on current time (called when Vacation switch turns off)."""
         if self._enable_schedule:
             self._async_sync_schedule_to_current_time()
         else:
@@ -502,6 +515,55 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         switch_entity = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id, {}).get("switch_entity")
         if switch_entity and switch_entity.hass:
             switch_entity.async_write_ha_state()
+
+    # --------------------------------------------------------------------------
+    # 3-Tier Sensor Safety & Fallback Hierarchy
+    # --------------------------------------------------------------------------
+
+    def _get_current_effective_temperature(self) -> tuple[float | None, str]:
+        """Read room temperature using 3-tier safety hierarchy.
+        
+        Tier 1: Configured remote sensor (Average House Helper).
+        Tier 2: Automatic fallback to physical thermostat built-in sensor.
+        Tier 3: Emergency (both sensors offline).
+        """
+        now = dt_util.utcnow()
+
+        # Tier 1: Primary Remote Sensor Helper
+        state = self.hass.states.get(self._temp_sensor)
+        if state and state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            # Check staleness using last_reported or last_updated (45m threshold)
+            report_time = getattr(state, "last_reported", None) or getattr(state, "last_updated", None)
+            is_stale = False
+            if report_time and (now - report_time) > timedelta(minutes=45):
+                is_stale = True
+
+            if not is_stale:
+                try:
+                    return float(state.state), "remote"
+                except (ValueError, TypeError):
+                    pass
+
+        # Tier 2: Automatic Fallback to Physical Thermostat Ambient Probe
+        phys_state = self.hass.states.get(self._target_climate)
+        if phys_state and phys_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            phys_temp = phys_state.attributes.get("current_temperature")
+            if phys_temp is not None:
+                try:
+                    val = float(phys_temp)
+                    _LOGGER.warning(
+                        "Remote sensor %s is unavailable or stale (>45m). "
+                        "Auto-failing over to physical thermostat %s built-in probe: %s°F.",
+                        self._temp_sensor,
+                        self._target_climate,
+                        val,
+                    )
+                    return val, "fallback_physical"
+                except (ValueError, TypeError):
+                    pass
+
+        # Tier 3: Emergency (No valid sensor available)
+        return None, "emergency"
 
     # --------------------------------------------------------------------------
     # Scheduling Engine (4 Mon-Fri Slots, 4 Sat-Sun Slots)
@@ -542,9 +604,14 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         slot_time, slot_preset = applicable_slot
         self._last_scheduled_slot = f"{day_type} Slot {slot_number} ({slot_time})"
 
-        # If slot is away but user is home, don't force away
+        # Presence check:
+        # 1. If slot is Away but user is actually Home: don't force Away
         if slot_preset == PRESET_AWAY and self._is_presence_home():
             slot_preset = PRESET_COMFORT
+
+        # 2. If user is NOT home and no pre-cooling immunity: keep Away!
+        if self._presence_sensor and not self._is_presence_home() and self._immunity_timer_cancel is None:
+            slot_preset = PRESET_AWAY
 
         _LOGGER.info("Synced schedule to current time: %s -> %s", self._last_scheduled_slot, slot_preset)
         self.hass.async_create_task(self.async_set_preset_mode(slot_preset))
@@ -562,7 +629,6 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         day_type = "Weekday" if weekday < 5 else "Weekend"
 
         for idx, (slot_time, slot_preset) in enumerate(active_slots, start=1):
-            # Compare on HH:MM only (e.g. "06:30" == "06:30")
             if current_time_str == slot_time[:5]:
                 slot_name = f"{day_type} Slot {idx} ({slot_time[:5]})"
                 if self._last_scheduled_slot != slot_name:
@@ -574,11 +640,16 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                         _LOGGER.info("Schedule called for Away, but presence is Home. Staying in Comfort.")
                         slot_preset = PRESET_COMFORT
 
+                    # If slot called for Comfort/Sleep but user is away and immunity not active
+                    if self._presence_sensor and not self._is_presence_home() and self._immunity_timer_cancel is None:
+                        _LOGGER.info("Schedule triggered %s, but nobody is home. Staying in Away.", slot_preset)
+                        slot_preset = PRESET_AWAY
+
                     await self.async_set_preset_mode(slot_preset)
                 break
 
     # --------------------------------------------------------------------------
-    # Core Regulation Engine (1-Sided Swing & Compressor Protection)
+    # Core Regulation Engine (Decoupled Offsets & 3-Tier Safety Hand-off)
     # --------------------------------------------------------------------------
 
     def _get_physical_limits(self) -> tuple[float, float]:
@@ -608,14 +679,26 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 await self._async_call_physical_off()
             return
 
-        if self._current_temperature is None:
+        cur_temp, source = self._get_current_effective_temperature()
+        self._current_temperature = cur_temp
+        self._active_sensor_source = source
+
+        # Tier 3 Emergency Failsafe Hand-off: If both remote and physical sensors are offline!
+        if cur_temp is None or source == "emergency":
+            _LOGGER.error(
+                "Both sensors offline! Engaging Tier 3 failsafe: Handing local control to physical thermostat at target %s°F.",
+                self._target_temperature,
+            )
+            await self._async_call_physical_safe_handoff(self._target_temperature)
+            self._hvac_action = HVACAction.IDLE
+            self.async_write_ha_state()
             return
 
         now = dt_util.utcnow()
         min_cycle = timedelta(minutes=self._min_cycle_duration)
         min_limit, max_limit = self._get_physical_limits()
 
-        # --- COOLING MODE (True 1-Sided Swing) ---
+        # --- COOLING MODE (True 1-Sided Swing & Safe Cooling Offset) ---
         if self._hvac_mode == HVACMode.COOL:
             # Turn ON when room warms to Target + Swing (e.g. 72 + 2 = 74°F)
             activate_temp = self._target_temperature + self._cooling_swing
@@ -632,8 +715,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     self._last_cycle_start = now
                 self._hvac_action = HVACAction.COOLING
 
-                # Safe dynamic offset: 1.5°F below target, never below thermostat's min_temp limit
-                physical_cool_target = max(self._target_temperature - 1.5, min_limit)
+                # Safe dynamic cooling offset (default 3.0°F, zero aux risk in cooling)
+                physical_cool_target = max(self._target_temperature - self._cooling_offset, min_limit)
                 await self._async_call_physical_cooling(physical_cool_target)
 
             elif self._current_temperature <= deactivate_temp:
@@ -647,7 +730,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 self._hvac_action = HVACAction.IDLE
                 await self._async_call_physical_off()
 
-        # --- HEATING MODE (True 1-Sided Swing) ---
+        # --- HEATING MODE (True 1-Sided Swing & Heat Pump Aux Protection) ---
         elif self._hvac_mode == HVACMode.HEAT:
             activate_temp = self._target_temperature - self._heating_swing
             deactivate_temp = self._target_temperature
@@ -661,9 +744,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     self._last_cycle_start = now
                 self._hvac_action = HVACAction.HEATING
 
-                # Safe dynamic offset: 1.5°F above target, never exceeding max_limit.
-                # Crucial for Heat Pumps: < 3°F offset ensures Aux/Strip heat is never triggered!
-                physical_heat_target = min(self._target_temperature + 1.5, max_limit)
+                # Safe dynamic heating offset (default 1.0°F, prevents heat pump Aux heat strips)
+                physical_heat_target = min(self._target_temperature + self._heating_offset, max_limit)
                 await self._async_call_physical_heating(physical_heat_target)
 
             elif self._current_temperature >= deactivate_temp:
@@ -736,6 +818,26 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             )
             self._last_sent_target_temp = target_temp
 
+    async def _async_call_physical_safe_handoff(self, target_temp: float) -> None:
+        """Engage Tier 3 failsafe: Hand over normal setpoint with 0 offset to physical thermostat."""
+        desired_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.OFF
+        await self.hass.services.async_call(
+            "climate",
+            "set_hvac_mode",
+            {ATTR_ENTITY_ID: self._target_climate, "hvac_mode": desired_mode},
+            blocking=False,
+        )
+        self._last_sent_physical_mode = desired_mode
+
+        if desired_mode != HVACMode.OFF:
+            await self.hass.services.async_call(
+                "climate",
+                "set_temperature",
+                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: target_temp},
+                blocking=False,
+            )
+            self._last_sent_target_temp = target_temp
+
     async def _async_call_physical_off(self) -> None:
         """Shut off physical thermostat and ensure fan entity is not held in continuous on."""
         physical_state = self.hass.states.get(self._target_climate)
@@ -763,55 +865,21 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
     # --------------------------------------------------------------------------
 
     async def _async_watchdog_check(self, now: datetime) -> None:
-        """Periodic safety watchdog to prevent runaway if sensor fails or goes stale."""
-        if self._hvac_action not in (HVACAction.COOLING, HVACAction.HEATING):
-            return
-
-        state = self.hass.states.get(self._temp_sensor)
-        is_stale = False
-        if not state or state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            is_stale = True
-        elif self._last_temp_sensor_update and (now - self._last_temp_sensor_update) > timedelta(minutes=20):
-            is_stale = True
-
-        if is_stale:
-            _LOGGER.warning(
-                "Temperature sensor %s is unavailable or stale (>20m). Triggering failsafe idle to protect HVAC.",
-                self._temp_sensor,
-            )
-            self._hvac_action = HVACAction.IDLE
-            await self._async_call_physical_off()
-            self.async_write_ha_state()
+        """Periodic safety watchdog evaluating sensor health and preventing runaways."""
+        await self._async_evaluate_regulation()
 
     async def _async_temp_sensor_changed(self, event: Event) -> None:
         """Handle temperature updates from remote sensor helper."""
-        new_state = event.data.get("new_state")
-        if not new_state or new_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
-            # Immediate fail-safe if sensor goes offline while running
-            if self._hvac_action in (HVACAction.COOLING, HVACAction.HEATING):
-                _LOGGER.warning("Remote sensor %s became unavailable. Idling HVAC.", self._temp_sensor)
-                self._hvac_action = HVACAction.IDLE
-                await self._async_call_physical_off()
-                self.async_write_ha_state()
-            return
-
-        try:
-            self._current_temperature = float(new_state.state)
-            self._last_temp_sensor_update = dt_util.utcnow()
-            await self._async_evaluate_regulation()
-        except ValueError:
-            pass
+        await self._async_evaluate_regulation()
 
     async def _async_target_climate_changed(self, event: Event) -> None:
-        """Two-way sync: Handle physical thermostat dial turns and mode changes accurately."""
+        """Two-way sync: Handle physical thermostat dial turns, mode changes, and season switchovers."""
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
         if not new_state or new_state.state in (STATE_UNKNOWN, STATE_UNAVAILABLE):
             return
 
         # 1. Handle Manual OFF Switch at the Wall
-        # Must be an actual state transition (e.g. cool -> off, heat -> off)
-        # AND not a command initiated by this integration!
         if (
             old_state is not None
             and old_state.state != HVACMode.OFF
@@ -826,16 +894,29 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self._notify_switch()
             return
 
-        # 2. Handle Manual Mode Switch at the Wall (e.g. user toggles wall unit to COOL or HEAT)
+        # 2. Handle Manual Mode Switch / Season Changeover at the Wall (e.g. user toggles between COOL and HEAT)
         if (
             old_state is not None
             and old_state.state != new_state.state
             and new_state.state in (HVACMode.COOL, HVACMode.HEAT)
             and self._last_sent_physical_mode != new_state.state
         ):
-            _LOGGER.info("Physical thermostat was manually switched to %s at the wall.", new_state.state)
+            _LOGGER.info("Physical thermostat was manually switched to %s at the wall (Season changeover).", new_state.state)
             self._hvac_mode = HVACMode(new_state.state)
             self._last_sent_physical_mode = new_state.state
+
+            # Sync setpoint for the new season/mode from preset targets
+            if self._preset_mode in self._preset_targets.get(self._hvac_mode, {}):
+                self._target_temperature = self._preset_targets[self._hvac_mode][self._preset_mode]
+            self._last_sent_target_temp = self._target_temperature
+
+            temp_attr = new_state.attributes.get(ATTR_TEMPERATURE)
+            if temp_attr is not None:
+                try:
+                    self._physical_last_reported_target = float(temp_attr)
+                except (ValueError, TypeError):
+                    pass
+
             await self._async_evaluate_regulation()
             self.async_write_ha_state()
             self._notify_switch()
