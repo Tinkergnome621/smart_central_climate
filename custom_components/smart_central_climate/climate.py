@@ -1053,8 +1053,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self._immunity_timer_cancel = None
             self._immunity_timer_end = None
             _LOGGER.info("Pre-cooling immunity window expired.")
-            # If user is still not home when pre-cooling immunity ends, safely revert to Away!
-            if self._presence_sensor and not self._is_presence_home() and self._preset_mode != PRESET_VACATION:
+            # If user is still not home when pre-cooling immunity ends, safely revert to Away only if still in Comfort!
+            if self._presence_sensor and not self._is_presence_home() and self._preset_mode == PRESET_COMFORT:
                 _LOGGER.info("Pre-cooling immunity expired and user is not home. Shifting to Away preset.")
                 self.hass.async_create_task(self.async_set_preset_mode(PRESET_AWAY))
             self.async_write_ha_state()
