@@ -7,7 +7,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity, SwitchDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -23,7 +23,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Vacation Mode switch entity."""
     entity = SmartCentralVacationSwitch(hass, entry)
-    # Store switch reference in hass.data
+    # Store switch reference in hass.data for direct two-way synchronization
     hass.data[DOMAIN][entry.entry_id]["switch_entity"] = entity
     async_add_entities([entity])
 
@@ -49,6 +49,11 @@ class SmartCentralVacationSwitch(SwitchEntity):
         )
 
     @property
+    def should_poll(self) -> bool:
+        """Return False as this switch is event-driven."""
+        return False
+
+    @property
     def is_on(self) -> bool:
         """Return True if Vacation Mode is active on the climate entity."""
         climate_entity = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id, {}).get("climate_entity")
@@ -67,5 +72,5 @@ class SmartCentralVacationSwitch(SwitchEntity):
         """Turn off Vacation Mode and resume normal scheduled preset."""
         climate_entity = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id, {}).get("climate_entity")
         if climate_entity:
-            await climate_entity.async_set_preset_mode("comfort")
+            await climate_entity.async_resume_schedule()
         self.async_write_ha_state()
