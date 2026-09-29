@@ -48,7 +48,7 @@ For the most reliable temperature tracking, create a **Min/Max (Mean) Helper** i
 2. Click the three dots in the top right > **Custom repositories**.
 3. Paste your repository URL: `https://github.com/Tinkergnome621/smart_central_climate`.
 4. Category: **Integration** > Click **Add**.
-5. Find **Smart Central Climate** in HACS and click **Download** (select version `v1.3.1`).
+5. Find **Smart Central Climate** in HACS and click **Download** (select version `v1.3.2`).
 6. Restart Home Assistant.
 
 ---
