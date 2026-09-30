@@ -26,7 +26,16 @@ A custom Home Assistant integration designed specifically for **Central A/C and 
 * 🤝 **Two-Way Wall Dial Sync & Season Changeover:** If someone physically turns the dial on the wall unit or flips the wall switch between Heat and Cool, `smart_central_climate` catches the change and syncs its state cleanly without fighting back.
 * ⏱️ **Smart Away (Errand Grace Period):** Leaving home starts a configurable grace timer (default: 60 minutes). Quick trips to the grocery store will not disrupt your A/C; only if you remain away does it shift to Away setpoints.
 * 🛡️ **Pre-Cooling Schedule Immunity:** When your schedule triggers Comfort mode (e.g. at 17:00 / 5 PM), cooling engages and activates an Away Immunity Window (default: 60 minutes). Away presence checks are locked out so your home is chilled before you arrive.
-* 🎛️ **Full UI Configuration & Options Flow:** Set up directly in the Home Assistant UI, and adjust any setpoint, schedule slot, swing, offset, or timer at any time under **Settings > Devices & Services > Configure**. Fully compatible with voice assistants and Lovelace power buttons via `climate.turn_on` and `climate.turn_off`.
+* 🔔 **Configurable Notification Triggers & Alerts (v1.4.0):**
+  * Individually toggle notifications on or off for:
+    * **HVAC Mode Changes:** Switched between Cool, Heat, or Off (including manual switchovers at the wall).
+    * **Preset Changes:** Shifts to Comfort, Eco, Away, Sleep, Boost, or Vacation.
+    * **Schedule Transitions:** Automated 4-slot daily period changes.
+    * **Presence & Errand Actions:** Errand grace timer start, auto-Away activations, and Welcome Home returns.
+    * **Sensor Fallback Warnings:** Stale remote sensor warnings, failover to wall thermostat, recovery alerts, and Tier 3 emergency notifications.
+  * **Target Service Selection:** Defaults to `notify.persistent_notification` (appears in HA's notification center), or route to your smartphone via `notify.mobile_app_phone` or `notify.notify`.
+  * **Native Event Bus:** Simultaneously fires `smart_central_climate_notification` events for building custom automations.
+* 🎛️ **Full UI Configuration & Options Flow:** Set up directly in the Home Assistant UI, and adjust any setpoint, schedule slot, swing, offset, timer, or notification trigger at any time under **Settings > Devices & Services > Configure**. Fully compatible with voice assistants and Lovelace power buttons via `climate.turn_on` and `climate.turn_off`.
 
 ---
 
@@ -48,7 +57,7 @@ For the most reliable temperature tracking, create a **Min/Max (Mean) Helper** i
 2. Click the three dots in the top right > **Custom repositories**.
 3. Paste your repository URL: `https://github.com/Tinkergnome621/smart_central_climate`.
 4. Category: **Integration** > Click **Add**.
-5. Find **Smart Central Climate** in HACS and click **Download** (select version `v1.3.3`).
+5. Find **Smart Central Climate** in HACS and click **Download** (select version `v1.4.0`).
 6. Restart Home Assistant.
 
 ---
@@ -64,11 +73,12 @@ For the most reliable temperature tracking, create a **Min/Max (Mean) Helper** i
    * **Presence Sensor (Optional):** (e.g., `person.your_name`)
 4. Confirm your default temperatures, swings, offsets, and vacation hold setpoints.
 5. Set your **4 Weekday** and **4 Weekend** schedule slots.
-6. Click **Submit**.
+6. Configure your **Notification Triggers & Target Service**.
+7. Click **Submit**.
 
 ---
 
-## Adjusting Schedules & Settings Anytime
+## Adjusting Schedules, Settings & Notifications Anytime
 
 You never need to edit YAML or reinstall. In Home Assistant:
 1. Go to **Settings** > **Devices & Services**.
@@ -78,4 +88,5 @@ You never need to edit YAML or reinstall. In Home Assistant:
    * **Monday – Friday Schedule (4 Slots)**
    * **Saturday – Sunday Schedule (4 Slots)**
    * **Presence, Timers & Safety**
+   * **Notification Triggers & Alerts**
 4. Adjust and click **Submit**.
