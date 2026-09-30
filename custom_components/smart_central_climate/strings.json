@@ -59,6 +59,18 @@
           "we_p4_time": "Weekend Period 4 Time (Night/Sleep)",
           "we_p4_preset": "Weekend Period 4 Preset"
         }
+      },
+      "notifications": {
+        "title": "Notification Triggers",
+        "description": "Choose which events trigger notifications and optionally specify a notification service (e.g. notify.notify or notify.mobile_app_phone).",
+        "data": {
+          "notify_service": "Notification Service (default: notify.persistent_notification)",
+          "notify_hvac_mode": "Notify on HVAC Mode Change (Cool / Heat / Off)",
+          "notify_preset": "Notify on Preset Change (Comfort, Eco, Away, Sleep, Boost, Vacation)",
+          "notify_schedule": "Notify on Scheduled Slot Transitions",
+          "notify_presence": "Notify on Presence / Errand Changes (Away / Return)",
+          "notify_sensor_fallback": "Notify on Sensor Fallback & Emergency Alerts"
+        }
       }
     }
   },
@@ -70,7 +82,8 @@
           "temperatures": "Temperature Presets, Swings & Offsets",
           "weekday_schedule": "Monday – Friday Schedule (4 Slots)",
           "weekend_schedule": "Saturday – Sunday Schedule (4 Slots)",
-          "presence_timers": "Errand Grace Delay & Away Immunity"
+          "presence_timers": "Errand Grace Delay & Away Immunity",
+          "notifications": "Notification Triggers & Alerts"
         }
       },
       "temperatures": {
@@ -131,6 +144,18 @@
           "errand_delay": "Errand Grace Delay (Minutes before Away)",
           "immunity_duration": "Pre-Cooling Away Immunity (Minutes)",
           "min_cycle_duration": "Minimum Compressor Cycle Time (Minutes)"
+        }
+      },
+      "notifications": {
+        "title": "Notification Triggers & Alerts",
+        "description": "Configure which system events trigger notifications. Leave notification service blank or set to notify.persistent_notification to display alerts in Home Assistant.",
+        "data": {
+          "notify_service": "Notification Service (e.g. notify.notify, notify.mobile_app_phone)",
+          "notify_hvac_mode": "Notify on HVAC Mode Change (Cool / Heat / Off)",
+          "notify_preset": "Notify on Preset Change (Comfort, Eco, Away, Sleep, Boost, Vacation)",
+          "notify_schedule": "Notify on Scheduled Slot Transitions",
+          "notify_presence": "Notify on Presence / Errand Changes (Away / Return)",
+          "notify_sensor_fallback": "Notify on Sensor Fallback & Emergency Alerts"
         }
       }
     }
