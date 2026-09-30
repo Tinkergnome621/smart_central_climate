@@ -90,3 +90,19 @@ You never need to edit YAML or reinstall. In Home Assistant:
    * **Presence, Timers & Safety**
    * **Notification Triggers & Alerts**
 4. Adjust and click **Submit**.
+
+---
+
+## 📋 Diagnostic Telemetry & State-Change Logging
+
+To provide full visibility during testing and operation, the integration logs structured diagnostics at the standard `INFO` level (visible directly in `Settings > System > Logs` without needing extra YAML logging config):
+
+* **5-Minute Telemetry Snapshot (`[TEST LOG][5-MINUTE HEARTBEAT]`):**
+  Logs effective room temperature, remote sensor reading, wall thermostat ambient probe, target setpoints, active dynamic offsets, system mode & action, physical hardware state, compressor run/dwell times, schedule slots, and presence timers.
+* **State Change Rationale (`[TEST LOG][STATE CHANGE]`):**
+  Every change to HVAC Mode, HVAC Action, Target Temperature, Preset, or Sensor Fallback logs both the old and new state along with the precise reason/trigger that caused the transition.
+* **HVAC Start / Stop Events (`[TEST LOG][HVAC START]` & `[TEST LOG][HVAC STOP]`):**
+  Explicitly logs when cooling or heating cycles start and stop, including active activation/satisfaction thresholds, cycle runtime durations, and setpoints.
+* **Cycle Delays & Safety Guards (`[TEST LOG][CYCLE DELAY]`):**
+  Logs when heating or cooling demand is held by anti-short-cycle dwell times or minimum runtime safety locks.
+

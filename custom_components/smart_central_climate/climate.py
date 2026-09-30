@@ -382,6 +382,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if prev_preset in SUPPORTED_PRESETS:
                 self._preset_mode = prev_preset
 
+            _LOGGER.info(
+                "[TEST LOG][RESTORE] Restored state from storage: Mode=%s, Target=%.1f°F, Preset=%s",
+                self._hvac_mode.value.upper(),
+                self._target_temperature,
+                self._preset_mode.upper(),
+            )
+
         # 2. Inspect physical thermostat's initial state
         phys_state = self.hass.states.get(self._target_climate)
         if phys_state and phys_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
@@ -427,7 +434,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 async_track_time_change(self.hass, self._async_check_schedule, second=0)
             )
 
-        # 8. Periodic 5-minute safety watchdog
+        # 8. Periodic 5-minute safety watchdog & telemetry snapshot
         self._listeners.append(
             async_track_time_interval(
                 self.hass, self._async_watchdog_check, timedelta(minutes=5)
@@ -443,6 +450,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 self._async_sync_schedule_to_current_time()
 
             await self._async_evaluate_regulation()
+            self._log_telemetry_snapshot("Startup Initialization")
 
         async_at_started(self.hass, _async_startup)
 
@@ -484,8 +492,30 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
             self._last_active_hvac_mode = hvac_mode
 
+        if old_mode != hvac_mode:
+            _LOGGER.info(
+                "[TEST LOG][STATE CHANGE] HVAC Mode changed from %s to %s. Reason: Requested via user interface or service call.",
+                str(old_mode).upper(),
+                str(hvac_mode).upper(),
+            )
+
         if hvac_mode == HVACMode.OFF:
+            if self._hvac_action in (HVACAction.COOLING, HVACAction.HEATING):
+                run_sec = int((dt_util.utcnow() - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                _LOGGER.info(
+                    "[TEST LOG][HVAC STOP] Stopping %s cycle immediately. Cycle runtime: %dm %ds. Reason: HVAC mode switched to OFF.",
+                    str(self._hvac_action).upper(),
+                    run_sec // 60,
+                    run_sec % 60,
+                )
+                self._last_cycle_stop = dt_util.utcnow()
+            old_action = self._hvac_action
             self._hvac_action = HVACAction.OFF
+            if old_action != HVACAction.OFF:
+                _LOGGER.info(
+                    "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to OFF. Reason: HVAC mode switched to OFF.",
+                    str(old_action).upper(),
+                )
             await self._async_call_physical_off()
         else:
             if self._preset_mode in self._preset_targets.get(hvac_mode, {}):
@@ -510,13 +540,23 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if temp is None:
             return
 
-        self._target_temperature = float(temp)
+        new_temp = float(temp)
+        old_temp = self._target_temperature
+        old_preset = self._preset_mode
+        self._target_temperature = new_temp
         self._preset_mode = PRESET_NONE
+
+        _LOGGER.info(
+            "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: Manual user adjustment via UI or service call.",
+            old_temp,
+            new_temp,
+            old_preset.upper(),
+        )
         await self._async_evaluate_regulation()
         self.async_write_ha_state()
         self._notify_switch()
 
-    async def async_set_preset_mode(self, preset_mode: str) -> None:
+    async def async_set_preset_mode(self, preset_mode: str, reason: str = "User selection via UI or service call") -> None:
         """Set new preset mode."""
         if preset_mode not in SUPPORTED_PRESETS:
             return
@@ -539,6 +579,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
             if preset_mode in self._preset_targets[self._hvac_mode]:
                 self._target_temperature = self._preset_targets[self._hvac_mode][preset_mode]
+
+        if old_preset != preset_mode:
+            _LOGGER.info(
+                "[TEST LOG][STATE CHANGE] Preset mode changed from '%s' to '%s'. Target setpoint set to %.1f°F. Reason: %s.",
+                old_preset.upper(),
+                preset_mode.upper(),
+                self._target_temperature,
+                reason,
+            )
 
         await self._async_evaluate_regulation()
 
@@ -662,7 +711,12 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 try:
                     val = float(state.state)
                     if self._logged_sensor_fallback:
-                        _LOGGER.info("Remote sensor %s is online and active. Resuming Tier 1 tracking.", self._temp_sensor)
+                        _LOGGER.info(
+                            "[TEST LOG][STATE CHANGE] Sensor source changed from 'fallback_physical' to 'remote'. "
+                            "Reason: Remote sensor '%s' is back online and reporting valid reading (%.1f°F). Resumed primary Tier 1 tracking.",
+                            self._temp_sensor,
+                            val,
+                        )
                         self._logged_sensor_fallback = False
                         self.hass.async_create_task(
                             self._async_send_notification(
@@ -684,8 +738,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     val = float(phys_temp)
                     if not self._logged_sensor_fallback:
                         _LOGGER.warning(
-                            "Remote sensor %s is unavailable or stale (>2h). "
-                            "Auto-failing over to physical thermostat %s built-in probe: %s°F.",
+                            "[TEST LOG][STATE CHANGE] Sensor source changed from 'remote' to 'fallback_physical'. "
+                            "Reason: Remote sensor '%s' is unavailable or stale (>2h). Auto-failing over to physical thermostat '%s' built-in probe (%.1f°F).",
                             self._temp_sensor,
                             self._target_climate,
                             val,
@@ -750,7 +804,12 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             slot_preset = PRESET_COMFORT
 
         _LOGGER.info("Synced schedule to current time: %s -> %s", self._last_scheduled_slot, slot_preset)
-        self.hass.async_create_task(self.async_set_preset_mode(slot_preset))
+        self.hass.async_create_task(
+            self.async_set_preset_mode(
+                slot_preset,
+                reason=f"Schedule synced to active slot: {self._last_scheduled_slot}",
+            )
+        )
 
     async def _async_check_schedule(self, now: datetime) -> None:
         """Evaluate schedules every minute."""
@@ -785,7 +844,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     )
 
                     # Apply preset (If Comfort triggers, it automatically activates Pre-Cooling Immunity)
-                    await self.async_set_preset_mode(slot_preset)
+                    await self.async_set_preset_mode(
+                        slot_preset,
+                        reason=f"Scheduled slot '{slot_name}' reached",
+                    )
                 break
 
     # --------------------------------------------------------------------------
@@ -829,7 +891,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if cur_temp is None or source == "emergency":
             if not self._logged_emergency_fallback:
                 _LOGGER.error(
-                    "Both sensors offline! Engaging Tier 3 failsafe: Handing local control to physical thermostat at target %s°F.",
+                    "[TEST LOG][STATE CHANGE] Sensor source changed to 'emergency'. "
+                    "Reason: Both remote sensor (%s) and physical thermostat probe (%s) are offline! Engaging Tier 3 failsafe local control at target %.1f°F.",
+                    self._temp_sensor,
+                    self._target_climate,
                     self._target_temperature,
                 )
                 self._logged_emergency_fallback = True
@@ -841,6 +906,11 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     )
                 )
             await self._async_call_physical_safe_handoff(self._target_temperature)
+            if self._hvac_action != HVACAction.IDLE:
+                _LOGGER.info(
+                    "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to IDLE. Reason: Tier 3 emergency failsafe handed control over to physical thermostat.",
+                    str(self._hvac_action).upper(),
+                )
             self._hvac_action = HVACAction.IDLE
             self.async_write_ha_state()
             return
@@ -861,26 +931,74 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if self._current_temperature >= activate_temp:
                 # Need cooling! Check minimum compressor off-time
                 if self._last_cycle_stop and (now - self._last_cycle_stop) < min_cycle:
-                    _LOGGER.debug("Waiting for compressor minimum off-time before starting cooling.")
+                    remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_stop).total_seconds())
+                    _LOGGER.info(
+                        "[TEST LOG][CYCLE DELAY] Cooling demand active (Current: %.1f°F >= Activate: %.1f°F), "
+                        "but compressor START is delayed: Anti-short-cycle minimum off/dwell time active (%ds remaining of %dm cycle).",
+                        self._current_temperature,
+                        activate_temp,
+                        remaining,
+                        self._min_cycle_duration,
+                    )
                     return
 
+                physical_cool_target = max(self._target_temperature - self._cooling_offset, min_limit)
                 if self._hvac_action != HVACAction.COOLING:
                     self._last_cycle_start = now
-                self._hvac_action = HVACAction.COOLING
+                    old_action = self._hvac_action
+                    self._hvac_action = HVACAction.COOLING
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC START] Starting COOLING cycle. Current Temp: %.1f°F, Target: %.1f°F (Activate threshold: %.1f°F), "
+                        "Wall Target Setpoint: %.1f°F (Offset: -%.1f°F). Reason: Room temperature (%.1f°F) reached or exceeded cooling activation threshold (%.1f°F).",
+                        self._current_temperature,
+                        self._target_temperature,
+                        activate_temp,
+                        physical_cool_target,
+                        self._cooling_offset,
+                        self._current_temperature,
+                        activate_temp,
+                    )
+                    _LOGGER.info(
+                        "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to COOLING. Reason: Room temperature (%.1f°F) >= activation threshold (%.1f°F).",
+                        str(old_action).upper(),
+                        self._current_temperature,
+                        activate_temp,
+                    )
 
-                # Safe dynamic cooling offset (default 3.0°F, zero aux risk in cooling)
-                physical_cool_target = max(self._target_temperature - self._cooling_offset, min_limit)
                 await self._async_call_physical_cooling(physical_cool_target)
 
             elif self._current_temperature <= deactivate_temp:
                 # Target achieved! Check minimum compressor run-time
                 if self._last_cycle_start and (now - self._last_cycle_start) < min_cycle:
-                    _LOGGER.debug("Waiting for compressor minimum run-time before stopping cooling.")
+                    remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_start).total_seconds())
+                    _LOGGER.info(
+                        "[TEST LOG][CYCLE DELAY] Cooling target satisfied (Current: %.1f°F <= Target: %.1f°F), "
+                        "but compressor STOP is delayed: Minimum cycle run-time protection active (%ds remaining of %dm cycle).",
+                        self._current_temperature,
+                        deactivate_temp,
+                        remaining,
+                        self._min_cycle_duration,
+                    )
                     return
 
                 if self._hvac_action == HVACAction.COOLING:
                     self._last_cycle_stop = now
-                self._hvac_action = HVACAction.IDLE
+                    run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                    old_action = self._hvac_action
+                    self._hvac_action = HVACAction.IDLE
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC STOP] Stopping COOLING cycle. Cycle runtime: %dm %ds. Current Temp: %.1f°F, Target: %.1f°F. "
+                        "Reason: Room temperature (%.1f°F) dropped to or below target setpoint (%.1f°F) - cooling demand satisfied.",
+                        run_sec // 60,
+                        run_sec % 60,
+                        self._current_temperature,
+                        self._target_temperature,
+                        self._current_temperature,
+                        deactivate_temp,
+                    )
+                    _LOGGER.info(
+                        "[TEST LOG][STATE CHANGE] HVAC Action changed from COOLING to IDLE. Reason: Target setpoint reached (cooling satisfied).",
+                    )
                 await self._async_call_physical_off()
 
         # --- HEATING MODE (True 1-Sided Swing & Heat Pump Aux Protection) ---
@@ -890,25 +1008,73 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
             if self._current_temperature <= activate_temp:
                 if self._last_cycle_stop and (now - self._last_cycle_stop) < min_cycle:
-                    _LOGGER.debug("Waiting for furnace minimum off-time before starting heating.")
+                    remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_stop).total_seconds())
+                    _LOGGER.info(
+                        "[TEST LOG][CYCLE DELAY] Heating demand active (Current: %.1f°F <= Activate: %.1f°F), "
+                        "but furnace/compressor START is delayed: Anti-short-cycle minimum off/dwell time active (%ds remaining of %dm cycle).",
+                        self._current_temperature,
+                        activate_temp,
+                        remaining,
+                        self._min_cycle_duration,
+                    )
                     return
 
+                physical_heat_target = min(self._target_temperature + self._heating_offset, max_limit)
                 if self._hvac_action != HVACAction.HEATING:
                     self._last_cycle_start = now
-                self._hvac_action = HVACAction.HEATING
+                    old_action = self._hvac_action
+                    self._hvac_action = HVACAction.HEATING
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC START] Starting HEATING cycle. Current Temp: %.1f°F, Target: %.1f°F (Activate threshold: %.1f°F), "
+                        "Wall Target Setpoint: %.1f°F (Offset: +%.1f°F). Reason: Room temperature (%.1f°F) reached or fell below heating activation threshold (%.1f°F).",
+                        self._current_temperature,
+                        self._target_temperature,
+                        activate_temp,
+                        physical_heat_target,
+                        self._heating_offset,
+                        self._current_temperature,
+                        activate_temp,
+                    )
+                    _LOGGER.info(
+                        "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to HEATING. Reason: Room temperature (%.1f°F) <= activation threshold (%.1f°F).",
+                        str(old_action).upper(),
+                        self._current_temperature,
+                        activate_temp,
+                    )
 
-                # Safe dynamic heating offset (default 1.0°F, prevents heat pump Aux heat strips)
-                physical_heat_target = min(self._target_temperature + self._heating_offset, max_limit)
                 await self._async_call_physical_heating(physical_heat_target)
 
             elif self._current_temperature >= deactivate_temp:
                 if self._last_cycle_start and (now - self._last_cycle_start) < min_cycle:
-                    _LOGGER.debug("Waiting for furnace minimum run-time before stopping heating.")
+                    remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_start).total_seconds())
+                    _LOGGER.info(
+                        "[TEST LOG][CYCLE DELAY] Heating target satisfied (Current: %.1f°F >= Target: %.1f°F), "
+                        "but furnace/compressor STOP is delayed: Minimum cycle run-time protection active (%ds remaining of %dm cycle).",
+                        self._current_temperature,
+                        deactivate_temp,
+                        remaining,
+                        self._min_cycle_duration,
+                    )
                     return
 
                 if self._hvac_action == HVACAction.HEATING:
                     self._last_cycle_stop = now
-                self._hvac_action = HVACAction.IDLE
+                    run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                    old_action = self._hvac_action
+                    self._hvac_action = HVACAction.IDLE
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC STOP] Stopping HEATING cycle. Cycle runtime: %dm %ds. Current Temp: %.1f°F, Target: %.1f°F. "
+                        "Reason: Room temperature (%.1f°F) rose to or above target setpoint (%.1f°F) - heating demand satisfied.",
+                        run_sec // 60,
+                        run_sec % 60,
+                        self._current_temperature,
+                        self._target_temperature,
+                        self._current_temperature,
+                        deactivate_temp,
+                    )
+                    _LOGGER.info(
+                        "[TEST LOG][STATE CHANGE] HVAC Action changed from HEATING to IDLE. Reason: Target setpoint reached (heating satisfied).",
+                    )
                 await self._async_call_physical_off()
 
         self.async_write_ha_state()
@@ -1009,17 +1175,106 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if self._fan_entity:
             fan_state = self.hass.states.get(self._fan_entity)
             if fan_state and fan_state.state != "off":
+                _LOGGER.info(
+                    "[TEST LOG][FAN STOP] Switching circulation fan '%s' from %s to OFF/Auto. Reason: HVAC system is idle or off.",
+                    self._fan_entity,
+                    fan_state.state,
+                )
                 await self.hass.services.async_call(
                     "fan", "turn_off", {ATTR_ENTITY_ID: self._fan_entity}, blocking=False
                 )
 
     # --------------------------------------------------------------------------
-    # Watchdog & Event Listeners (Sensors, Wall Dial Sync, Presence)
+    # Watchdog, Diagnostic Telemetry & Event Listeners
     # --------------------------------------------------------------------------
 
+    def _log_telemetry_snapshot(self, trigger_reason: str = "5-Minute Heartbeat") -> None:
+        """Log a comprehensive 5-minute diagnostic snapshot of all temperatures, states, and safety timers."""
+        now = dt_util.utcnow()
+
+        # Effective & Remote Sensor
+        remote_state = self.hass.states.get(self._temp_sensor) if self._temp_sensor else None
+        remote_val = f"{remote_state.state}°F" if remote_state and remote_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE) else (remote_state.state if remote_state else "n/a")
+
+        # Wall Thermostat
+        phys_state = self.hass.states.get(self._target_climate) if self._target_climate else None
+        phys_temp = phys_state.attributes.get("current_temperature") if phys_state else None
+        phys_temp_str = f"{phys_temp}°F" if phys_temp is not None else "n/a"
+        phys_mode = phys_state.state if phys_state else "unknown"
+        phys_action = phys_state.attributes.get("hvac_action") if phys_state else "unknown"
+        phys_target = phys_state.attributes.get(ATTR_TEMPERATURE) if phys_state else None
+        phys_target_str = f"{phys_target}°F" if phys_target is not None else "n/a"
+
+        # Fan
+        fan_state_str = "n/a"
+        if self._fan_entity:
+            fst = self.hass.states.get(self._fan_entity)
+            fan_state_str = fst.state if fst else "unknown"
+
+        # Compressor Telemetry
+        if self._hvac_action in (HVACAction.COOLING, HVACAction.HEATING):
+            run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+            compressor_status = f"RUNNING ({self._hvac_action.value.upper()}) for {run_sec // 60}m {run_sec % 60}s"
+        else:
+            if self._last_cycle_stop:
+                off_sec = int((now - self._last_cycle_stop).total_seconds())
+                min_dwell_sec = int(self._min_cycle_duration * 60)
+                dwell_rem = max(0, min_dwell_sec - off_sec)
+                compressor_status = f"IDLE / OFF for {off_sec // 60}m {off_sec % 60}s (anti-short-cycle dwell remaining: {dwell_rem}s)"
+            else:
+                compressor_status = "IDLE / OFF (no prior cycle recorded)"
+
+        # Presence & Timers
+        presence_str = "Home" if self._is_presence_home() else "Away"
+        if self._errand_timer_end and self._errand_timer_end > now:
+            presence_str += f" [Errand Grace: {int((self._errand_timer_end - now).total_seconds() / 60)}m remaining]"
+        if self._immunity_timer_end and self._immunity_timer_end > now:
+            presence_str += f" [Pre-cooling Immunity: {int((self._immunity_timer_end - now).total_seconds() / 60)}m remaining]"
+
+        # Active offset
+        offset_val = 0.0
+        if self._hvac_mode == HVACMode.COOL:
+            offset_val = -self._cooling_offset
+        elif self._hvac_mode == HVACMode.HEAT:
+            offset_val = self._heating_offset
+
+        schedule_str = self._last_scheduled_slot if self._enable_schedule else "Disabled"
+        cur_temp_str = f"{self._current_temperature:.1f}°F" if self._current_temperature is not None else "OFFLINE"
+
+        _LOGGER.info(
+            "[TEST LOG][%s]\n"
+            "  * Current Temps : Effective=%s (source=%s), Remote Sensor (%s)=%s, Wall Unit (%s)=%s\n"
+            "  * Target Targets: Target Setpoint=%.1f°F, Dynamic Offset=%.1f°F, Wall Setpoint=%s\n"
+            "  * System State  : HVAC Mode=%s, HVAC Action=%s, Preset=%s, Blower Fan=%s\n"
+            "  * Hardware State: Wall Mode=%s, Wall Action=%s\n"
+            "  * Compressor    : %s (min_cycle=%dm)\n"
+            "  * Schedule/Pres : Schedule=%s | Presence=%s",
+            trigger_reason.upper(),
+            cur_temp_str,
+            self._active_sensor_source,
+            self._temp_sensor,
+            remote_val,
+            self._target_climate,
+            phys_temp_str,
+            self._target_temperature,
+            offset_val,
+            phys_target_str,
+            str(self._hvac_mode).upper(),
+            str(self._hvac_action).upper(),
+            self._preset_mode.upper(),
+            fan_state_str,
+            str(phys_mode).upper(),
+            str(phys_action).upper(),
+            compressor_status,
+            self._min_cycle_duration,
+            schedule_str,
+            presence_str,
+        )
+
     async def _async_watchdog_check(self, now: datetime) -> None:
-        """Periodic safety watchdog evaluating sensor health and preventing runaways."""
+        """Periodic 5-minute safety watchdog evaluating sensor health and logging telemetry snapshot."""
         await self._async_evaluate_regulation()
+        self._log_telemetry_snapshot("5-Minute Heartbeat")
 
     async def _async_temp_sensor_changed(self, event: Event) -> None:
         """Handle temperature updates from remote sensor helper."""
@@ -1039,9 +1294,27 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             and new_state.state == HVACMode.OFF
             and self._last_sent_physical_mode != HVACMode.OFF
         ):
-            _LOGGER.info("Physical thermostat was manually switched OFF at the wall.")
+            _LOGGER.info(
+                "[TEST LOG][STATE CHANGE] HVAC Mode changed from %s to OFF. Reason: Physical wall thermostat was manually switched OFF at the wall unit.",
+                str(self._hvac_mode).upper(),
+            )
+            if self._hvac_action in (HVACAction.COOLING, HVACAction.HEATING):
+                run_sec = int((dt_util.utcnow() - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                _LOGGER.info(
+                    "[TEST LOG][HVAC STOP] Stopping %s cycle immediately. Cycle runtime: %dm %ds. Reason: Wall thermostat manually switched OFF.",
+                    str(self._hvac_action).upper(),
+                    run_sec // 60,
+                    run_sec % 60,
+                )
+                self._last_cycle_stop = dt_util.utcnow()
+            old_action = self._hvac_action
             self._hvac_mode = HVACMode.OFF
             self._hvac_action = HVACAction.OFF
+            if old_action != HVACAction.OFF:
+                _LOGGER.info(
+                    "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to OFF. Reason: Wall thermostat manually switched OFF.",
+                    str(old_action).upper(),
+                )
             self._last_sent_physical_mode = HVACMode.OFF
             self.hass.async_create_task(
                 self._async_send_notification(
@@ -1061,7 +1334,11 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             and new_state.state in (HVACMode.COOL, HVACMode.HEAT)
             and self._last_sent_physical_mode != new_state.state
         ):
-            _LOGGER.info("Physical thermostat was manually switched to %s at the wall (Season changeover).", new_state.state)
+            _LOGGER.info(
+                "[TEST LOG][STATE CHANGE] HVAC Mode changed from %s to %s. Reason: Physical wall thermostat was manually switched at the wall unit (Season Changeover).",
+                str(self._hvac_mode).upper(),
+                str(new_state.state).upper(),
+            )
             self._hvac_mode = HVACMode(new_state.state)
             self._last_sent_physical_mode = new_state.state
             self._last_active_hvac_mode = HVACMode(new_state.state)
@@ -1110,9 +1387,11 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                         new_user_target = new_target
 
                     _LOGGER.info(
-                        "Physical dial adjusted to %s°F by user. Updating target to %s°F.",
-                        new_target,
+                        "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: User physically turned wall thermostat dial to %.1f°F.",
+                        self._target_temperature,
                         new_user_target,
+                        self._preset_mode.upper(),
+                        new_target,
                     )
                     self._target_temperature = new_user_target
                     self._preset_mode = PRESET_NONE
@@ -1157,10 +1436,18 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # User left home -> Start 1-Hour Errand Grace Timer
         if was_home and not is_home:
             if self._immunity_timer_cancel is not None:
-                _LOGGER.info("Pre-cooling immunity is active. Ignoring away transition.")
+                _LOGGER.info(
+                    "[TEST LOG][PRESENCE] Residents departed, but Away transition ignored. Reason: Pre-cooling immunity window is active."
+                )
                 return
 
-            _LOGGER.info("User left home. Starting %d minute errand grace period.", self._errand_delay)
+            _LOGGER.info(
+                "[TEST LOG][PRESENCE] Residents departed. Reason: Presence sensor '%s' changed from %s to %s. Starting %d-minute errand grace timer.",
+                self._presence_sensor,
+                old_state.state,
+                new_state.state,
+                self._errand_delay,
+            )
             self._errand_timer_end = dt_util.utcnow() + timedelta(minutes=self._errand_delay)
 
             self.hass.async_create_task(
@@ -1176,8 +1463,16 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 self._errand_timer_cancel = None
                 self._errand_timer_end = None
                 if not self._is_presence_home():
-                    _LOGGER.info("Errand timer expired. Applying Away preset.")
-                    self.hass.async_create_task(self.async_set_preset_mode(PRESET_AWAY))
+                    _LOGGER.info(
+                        "[TEST LOG][PRESENCE] Errand grace period (%d min) expired with no residents home. Switching to Away preset.",
+                        self._errand_delay,
+                    )
+                    self.hass.async_create_task(
+                        self.async_set_preset_mode(
+                            PRESET_AWAY,
+                            reason=f"Errand grace timer ({self._errand_delay}m) expired without residents returning",
+                        )
+                    )
                     self.hass.async_create_task(
                         self._async_send_notification(
                             title="Away Mode Activated",
@@ -1194,13 +1489,19 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # User returned home -> Cancel errand timer, restore currently scheduled slot!
         elif not was_home and is_home:
             if self._errand_timer_cancel:
-                _LOGGER.info("User returned before errand timer expired. Canceling errand timer.")
+                _LOGGER.info(
+                    "[TEST LOG][PRESENCE] Residents returned home before errand grace timer expired. Errand timer canceled."
+                )
                 self._errand_timer_cancel()
                 self._errand_timer_cancel = None
                 self._errand_timer_end = None
 
             if self._preset_mode == PRESET_AWAY:
-                _LOGGER.info("User returned home. Restoring scheduled preset.")
+                _LOGGER.info(
+                    "[TEST LOG][PRESENCE] Residents returned home while Away. Reason: Presence sensor '%s' detected arrival (%s). Restoring scheduled preset.",
+                    self._presence_sensor,
+                    new_state.state,
+                )
                 self.hass.async_create_task(
                     self._async_send_notification(
                         title="Welcome Home",
@@ -1211,7 +1512,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 if self._enable_schedule:
                     self._async_sync_schedule_to_current_time()
                 else:
-                    await self.async_set_preset_mode(PRESET_COMFORT)
+                    await self.async_set_preset_mode(
+                        PRESET_COMFORT,
+                        reason="Resident returned home (Welcome Home trigger)",
+                    )
 
             self.async_write_ha_state()
 
@@ -1220,18 +1524,28 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if self._immunity_timer_cancel:
             self._immunity_timer_cancel()
 
-        _LOGGER.info("Starting %d minute Away Immunity Window for Pre-Cooling.", self._immunity_duration)
+        _LOGGER.info(
+            "[TEST LOG][PRE-COOLING] Starting %d-minute Away Immunity Window for Pre-Cooling.",
+            self._immunity_duration,
+        )
         self._immunity_timer_end = dt_util.utcnow() + timedelta(minutes=self._immunity_duration)
 
         @callback
         def _async_immunity_expired(_: datetime) -> None:
             self._immunity_timer_cancel = None
             self._immunity_timer_end = None
-            _LOGGER.info("Pre-cooling immunity window expired.")
+            _LOGGER.info("[TEST LOG][PRE-COOLING] Pre-cooling immunity window (%d min) expired.", self._immunity_duration)
             # If user is still not home when pre-cooling immunity ends, safely revert to Away only if still in Comfort!
             if self._presence_sensor and not self._is_presence_home() and self._preset_mode == PRESET_COMFORT:
-                _LOGGER.info("Pre-cooling immunity expired and user is not home. Shifting to Away preset.")
-                self.hass.async_create_task(self.async_set_preset_mode(PRESET_AWAY))
+                _LOGGER.info(
+                    "[TEST LOG][PRE-COOLING] Pre-cooling immunity expired and no residents home. Reverting to Away preset."
+                )
+                self.hass.async_create_task(
+                    self.async_set_preset_mode(
+                        PRESET_AWAY,
+                        reason=f"Pre-cooling immunity window ({self._immunity_duration}m) expired with no residents home",
+                    )
+                )
                 self.hass.async_create_task(
                     self._async_send_notification(
                         title="Pre-Cooling Finished",
