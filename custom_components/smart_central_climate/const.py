@@ -56,6 +56,14 @@ CONF_WE_P3_PRESET = "we_p3_preset"
 CONF_WE_P4_TIME = "we_p4_time"
 CONF_WE_P4_PRESET = "we_p4_preset"
 
+# Notification Trigger Configuration
+CONF_NOTIFY_SERVICE = "notify_service"
+CONF_NOTIFY_HVAC_MODE = "notify_hvac_mode"
+CONF_NOTIFY_PRESET = "notify_preset"
+CONF_NOTIFY_SCHEDULE = "notify_schedule"
+CONF_NOTIFY_PRESENCE = "notify_presence"
+CONF_NOTIFY_SENSOR_FALLBACK = "notify_sensor_fallback"
+
 # Defaults - Swings & Delays
 DEFAULT_COOLING_SWING = 2.0
 DEFAULT_HEATING_SWING = 1.0
@@ -101,3 +109,11 @@ DEFAULT_WE_P3_TIME = "17:30"
 DEFAULT_WE_P3_PRESET = "comfort"
 DEFAULT_WE_P4_TIME = "23:00"
 DEFAULT_WE_P4_PRESET = "sleep"
+
+# Defaults - Notification Triggers
+DEFAULT_NOTIFY_SERVICE = "notify.persistent_notification"
+DEFAULT_NOTIFY_HVAC_MODE = True
+DEFAULT_NOTIFY_PRESET = True
+DEFAULT_NOTIFY_SCHEDULE = False
+DEFAULT_NOTIFY_PRESENCE = True
+DEFAULT_NOTIFY_SENSOR_FALLBACK = True
