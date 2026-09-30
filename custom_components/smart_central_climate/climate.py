@@ -85,6 +85,12 @@ from .const import (
     CONF_WE_P3_TIME,
     CONF_WE_P4_PRESET,
     CONF_WE_P4_TIME,
+    CONF_NOTIFY_SERVICE,
+    CONF_NOTIFY_HVAC_MODE,
+    CONF_NOTIFY_PRESET,
+    CONF_NOTIFY_SCHEDULE,
+    CONF_NOTIFY_PRESENCE,
+    CONF_NOTIFY_SENSOR_FALLBACK,
     DEFAULT_AWAY_COOL,
     DEFAULT_AWAY_HEAT,
     DEFAULT_BOOST_COOL,
@@ -101,6 +107,12 @@ from .const import (
     DEFAULT_HEATING_SWING,
     DEFAULT_IMMUNITY_DURATION,
     DEFAULT_MIN_CYCLE_DURATION,
+    DEFAULT_NOTIFY_SERVICE,
+    DEFAULT_NOTIFY_HVAC_MODE,
+    DEFAULT_NOTIFY_PRESET,
+    DEFAULT_NOTIFY_SCHEDULE,
+    DEFAULT_NOTIFY_PRESENCE,
+    DEFAULT_NOTIFY_SENSOR_FALLBACK,
     DEFAULT_SLEEP_COOL,
     DEFAULT_SLEEP_HEAT,
     DEFAULT_VACATION_COOL,
@@ -228,6 +240,14 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             (cfg.get(CONF_WE_P4_TIME, DEFAULT_WE_P4_TIME), cfg.get(CONF_WE_P4_PRESET, DEFAULT_WE_P4_PRESET)),
         ]
         self._enable_schedule = cfg.get(CONF_ENABLE_SCHEDULE, DEFAULT_ENABLE_SCHEDULE)
+
+        # Notification Trigger Settings
+        self._notify_service: str = str(cfg.get(CONF_NOTIFY_SERVICE, DEFAULT_NOTIFY_SERVICE)).strip()
+        self._notify_hvac_mode: bool = bool(cfg.get(CONF_NOTIFY_HVAC_MODE, DEFAULT_NOTIFY_HVAC_MODE))
+        self._notify_preset: bool = bool(cfg.get(CONF_NOTIFY_PRESET, DEFAULT_NOTIFY_PRESET))
+        self._notify_schedule: bool = bool(cfg.get(CONF_NOTIFY_SCHEDULE, DEFAULT_NOTIFY_SCHEDULE))
+        self._notify_presence: bool = bool(cfg.get(CONF_NOTIFY_PRESENCE, DEFAULT_NOTIFY_PRESENCE))
+        self._notify_sensor_fallback: bool = bool(cfg.get(CONF_NOTIFY_SENSOR_FALLBACK, DEFAULT_NOTIFY_SENSOR_FALLBACK))
 
         # Internal State Machine
         self._hvac_mode: HVACMode = HVACMode.COOL
@@ -459,6 +479,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if hvac_mode not in self.hvac_modes:
             return
 
+        old_mode = self._hvac_mode
         self._hvac_mode = hvac_mode
         if hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
             self._last_active_hvac_mode = hvac_mode
@@ -470,6 +491,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if self._preset_mode in self._preset_targets.get(hvac_mode, {}):
                 self._target_temperature = self._preset_targets[hvac_mode][self._preset_mode]
             await self._async_evaluate_regulation()
+
+        if old_mode != hvac_mode:
+            self.hass.async_create_task(
+                self._async_send_notification(
+                    title="Climate Mode Changed",
+                    message=f"{self.name or 'Smart Central Climate'} mode switched from {str(old_mode).upper()} to {str(hvac_mode).upper()}.",
+                    notification_type="hvac_mode",
+                )
+            )
 
         self.async_write_ha_state()
         self._notify_switch()
@@ -491,6 +521,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if preset_mode not in SUPPORTED_PRESETS:
             return
 
+        old_preset = self._preset_mode
         self._preset_mode = preset_mode
 
         # If entering Comfort mode, start 60-minute Away Immunity Window (Pre-Cooling)
@@ -510,6 +541,17 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 self._target_temperature = self._preset_targets[self._hvac_mode][preset_mode]
 
         await self._async_evaluate_regulation()
+
+        if old_preset != preset_mode:
+            target_str = f" (Target: {self._target_temperature}°F)" if self._target_temperature else ""
+            self.hass.async_create_task(
+                self._async_send_notification(
+                    title="Preset Mode Changed",
+                    message=f"{self.name or 'Smart Central Climate'} preset set to {preset_mode.capitalize()}{target_str}.",
+                    notification_type="preset",
+                )
+            )
+
         self.async_write_ha_state()
         self._notify_switch()
 
@@ -519,6 +561,74 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self._async_sync_schedule_to_current_time()
         else:
             await self.async_set_preset_mode(PRESET_COMFORT)
+
+    async def _async_send_notification(self, title: str, message: str, notification_type: str) -> None:
+        """Dispatch a notification based on user configuration."""
+        enabled = False
+        if notification_type == "hvac_mode" and self._notify_hvac_mode:
+            enabled = True
+        elif notification_type == "preset" and self._notify_preset:
+            enabled = True
+        elif notification_type == "schedule" and self._notify_schedule:
+            enabled = True
+        elif notification_type == "presence" and self._notify_presence:
+            enabled = True
+        elif notification_type == "sensor_fallback" and self._notify_sensor_fallback:
+            enabled = True
+
+        if not enabled:
+            return
+
+        # Fire HA event for custom automations
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_notification",
+            {
+                "type": notification_type,
+                "title": title,
+                "message": message,
+                "entity_id": self.entity_id,
+            },
+        )
+
+        service = self._notify_service or "notify.persistent_notification"
+        try:
+            if "." in service:
+                domain, service_name = service.split(".", 1)
+                if domain == "persistent_notification":
+                    await self.hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "title": title,
+                            "message": message,
+                            "notification_id": f"{DOMAIN}_{notification_type}",
+                        },
+                        blocking=False,
+                    )
+                    return
+
+                await self.hass.services.async_call(
+                    domain,
+                    service_name,
+                    {
+                        "title": title,
+                        "message": message,
+                    },
+                    blocking=False,
+                )
+            else:
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": title,
+                        "message": message,
+                        "notification_id": f"{DOMAIN}_{notification_type}",
+                    },
+                    blocking=False,
+                )
+        except Exception as err:
+            _LOGGER.warning("Failed to dispatch %s notification via %s: %s", notification_type, service, err)
 
     def _notify_switch(self) -> None:
         """Notify Vacation Mode switch of state changes."""
@@ -554,6 +664,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     if self._logged_sensor_fallback:
                         _LOGGER.info("Remote sensor %s is online and active. Resuming Tier 1 tracking.", self._temp_sensor)
                         self._logged_sensor_fallback = False
+                        self.hass.async_create_task(
+                            self._async_send_notification(
+                                title="Sensor Restored",
+                                message=f"Remote sensor '{self._temp_sensor}' is back online. Resumed primary temperature tracking.",
+                                notification_type="sensor_fallback",
+                            )
+                        )
                     return val, "remote"
                 except (ValueError, TypeError):
                     pass
@@ -574,6 +691,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                             val,
                         )
                         self._logged_sensor_fallback = True
+                        self.hass.async_create_task(
+                            self._async_send_notification(
+                                title="Sensor Fallback Warning",
+                                message=f"Remote sensor '{self._temp_sensor}' is stale or unavailable. Auto-switched to wall unit probe ({val}°F).",
+                                notification_type="sensor_fallback",
+                            )
+                        )
                     return val, "fallback_physical"
                 except (ValueError, TypeError):
                     pass
@@ -652,6 +776,14 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                         _LOGGER.info("Schedule called for Away, but presence is Home. Staying in Comfort.")
                         slot_preset = PRESET_COMFORT
 
+                    self.hass.async_create_task(
+                        self._async_send_notification(
+                            title="Schedule Transition",
+                            message=f"{self.name or 'Smart Central Climate'} schedule triggered {slot_name} ({slot_preset.capitalize()}).",
+                            notification_type="schedule",
+                        )
+                    )
+
                     # Apply preset (If Comfort triggers, it automatically activates Pre-Cooling Immunity)
                     await self.async_set_preset_mode(slot_preset)
                 break
@@ -701,6 +833,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     self._target_temperature,
                 )
                 self._logged_emergency_fallback = True
+                self.hass.async_create_task(
+                    self._async_send_notification(
+                        title="EMERGENCY: All Sensors Offline",
+                        message=f"Both remote sensor and wall thermostat probe are unavailable! Failsafe handoff engaged at {self._target_temperature}°F.",
+                        notification_type="sensor_fallback",
+                    )
+                )
             await self._async_call_physical_safe_handoff(self._target_temperature)
             self._hvac_action = HVACAction.IDLE
             self.async_write_ha_state()
@@ -904,6 +1043,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self._hvac_mode = HVACMode.OFF
             self._hvac_action = HVACAction.OFF
             self._last_sent_physical_mode = HVACMode.OFF
+            self.hass.async_create_task(
+                self._async_send_notification(
+                    title="Wall Thermostat Switched Off",
+                    message="Thermostat was manually switched OFF at the wall unit.",
+                    notification_type="hvac_mode",
+                )
+            )
             self.async_write_ha_state()
             self._notify_switch()
             return
@@ -919,6 +1065,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self._hvac_mode = HVACMode(new_state.state)
             self._last_sent_physical_mode = new_state.state
             self._last_active_hvac_mode = HVACMode(new_state.state)
+            self.hass.async_create_task(
+                self._async_send_notification(
+                    title="Season Changeover at Wall",
+                    message=f"Wall thermostat switched to {new_state.state.upper()} mode.",
+                    notification_type="hvac_mode",
+                )
+            )
 
             # Sync setpoint for the new season/mode from preset targets
             if self._preset_mode in self._preset_targets.get(self._hvac_mode, {}):
@@ -1010,6 +1163,14 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             _LOGGER.info("User left home. Starting %d minute errand grace period.", self._errand_delay)
             self._errand_timer_end = dt_util.utcnow() + timedelta(minutes=self._errand_delay)
 
+            self.hass.async_create_task(
+                self._async_send_notification(
+                    title="Errand Grace Delay Started",
+                    message=f"No presence detected. Holding Comfort for {self._errand_delay} minutes before switching to Away.",
+                    notification_type="presence",
+                )
+            )
+
             @callback
             def _async_errand_expired(_: datetime) -> None:
                 self._errand_timer_cancel = None
@@ -1017,6 +1178,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 if not self._is_presence_home():
                     _LOGGER.info("Errand timer expired. Applying Away preset.")
                     self.hass.async_create_task(self.async_set_preset_mode(PRESET_AWAY))
+                    self.hass.async_create_task(
+                        self._async_send_notification(
+                            title="Away Mode Activated",
+                            message="Errand grace delay expired with no presence detected. Switched to Away preset.",
+                            notification_type="presence",
+                        )
+                    )
 
             self._errand_timer_cancel = async_call_later(
                 self.hass, self._errand_delay * 60, _async_errand_expired
@@ -1033,6 +1201,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
             if self._preset_mode == PRESET_AWAY:
                 _LOGGER.info("User returned home. Restoring scheduled preset.")
+                self.hass.async_create_task(
+                    self._async_send_notification(
+                        title="Welcome Home",
+                        message="Presence detected. Resumed scheduled Comfort preset.",
+                        notification_type="presence",
+                    )
+                )
                 if self._enable_schedule:
                     self._async_sync_schedule_to_current_time()
                 else:
@@ -1057,6 +1232,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if self._presence_sensor and not self._is_presence_home() and self._preset_mode == PRESET_COMFORT:
                 _LOGGER.info("Pre-cooling immunity expired and user is not home. Shifting to Away preset.")
                 self.hass.async_create_task(self.async_set_preset_mode(PRESET_AWAY))
+                self.hass.async_create_task(
+                    self._async_send_notification(
+                        title="Pre-Cooling Finished",
+                        message="Pre-cooling window finished and no presence detected. Switched to Away preset.",
+                        notification_type="presence",
+                    )
+                )
             self.async_write_ha_state()
 
         self._immunity_timer_cancel = async_call_later(
