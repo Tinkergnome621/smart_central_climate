@@ -50,6 +50,12 @@ from .const import (
     CONF_WE_P3_PRESET,
     CONF_WE_P4_TIME,
     CONF_WE_P4_PRESET,
+    CONF_NOTIFY_SERVICE,
+    CONF_NOTIFY_HVAC_MODE,
+    CONF_NOTIFY_PRESET,
+    CONF_NOTIFY_SCHEDULE,
+    CONF_NOTIFY_PRESENCE,
+    CONF_NOTIFY_SENSOR_FALLBACK,
     DEFAULT_COOLING_SWING,
     DEFAULT_HEATING_SWING,
     DEFAULT_COOLING_OFFSET,
@@ -86,6 +92,12 @@ from .const import (
     DEFAULT_WE_P3_PRESET,
     DEFAULT_WE_P4_TIME,
     DEFAULT_WE_P4_PRESET,
+    DEFAULT_NOTIFY_SERVICE,
+    DEFAULT_NOTIFY_HVAC_MODE,
+    DEFAULT_NOTIFY_PRESET,
+    DEFAULT_NOTIFY_SCHEDULE,
+    DEFAULT_NOTIFY_PRESENCE,
+    DEFAULT_NOTIFY_SENSOR_FALLBACK,
 )
 
 PRESET_OPTIONS = [
@@ -174,9 +186,7 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Step 3: Weekday and Weekend 4-Slot Schedules."""
         if user_input is not None:
             self._data.update(user_input)
-            return self.async_create_entry(
-                title=self._data.get("name", "Smart Central A/C"), data=self._data
-            )
+            return await self.async_step_notifications()
 
         schema = vol.Schema(
             {
@@ -220,6 +230,29 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(step_id="schedules", data_schema=schema)
 
+    async def async_step_notifications(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Step 4: Configure notification triggers and service."""
+        if user_input is not None:
+            self._data.update(user_input)
+            return self.async_create_entry(
+                title=self._data.get("name", "Smart Central A/C"), data=self._data
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_NOTIFY_SERVICE, default=DEFAULT_NOTIFY_SERVICE): str,
+                vol.Required(CONF_NOTIFY_HVAC_MODE, default=DEFAULT_NOTIFY_HVAC_MODE): bool,
+                vol.Required(CONF_NOTIFY_PRESET, default=DEFAULT_NOTIFY_PRESET): bool,
+                vol.Required(CONF_NOTIFY_SCHEDULE, default=DEFAULT_NOTIFY_SCHEDULE): bool,
+                vol.Required(CONF_NOTIFY_PRESENCE, default=DEFAULT_NOTIFY_PRESENCE): bool,
+                vol.Required(CONF_NOTIFY_SENSOR_FALLBACK, default=DEFAULT_NOTIFY_SENSOR_FALLBACK): bool,
+            }
+        )
+
+        return self.async_show_form(step_id="notifications", data_schema=schema)
+
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -243,7 +276,7 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
         self._options = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_menu(
             step_id="init",
-            menu_options=["temperatures", "weekday_schedule", "weekend_schedule", "presence_timers"],
+            menu_options=["temperatures", "weekday_schedule", "weekend_schedule", "presence_timers", "notifications"],
         )
 
     async def async_step_temperatures(
@@ -357,3 +390,25 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
             }
         )
         return self.async_show_form(step_id="presence_timers", data_schema=schema)
+
+    async def async_step_notifications(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Modify notification triggers and service."""
+        if user_input is not None:
+            self._options.update(user_input)
+            return self.async_create_entry(title="", data=self._options)
+
+        cfg = self._options
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_NOTIFY_SERVICE, default=cfg.get(CONF_NOTIFY_SERVICE, DEFAULT_NOTIFY_SERVICE)): str,
+                vol.Required(CONF_NOTIFY_HVAC_MODE, default=cfg.get(CONF_NOTIFY_HVAC_MODE, DEFAULT_NOTIFY_HVAC_MODE)): bool,
+                vol.Required(CONF_NOTIFY_PRESET, default=cfg.get(CONF_NOTIFY_PRESET, DEFAULT_NOTIFY_PRESET)): bool,
+                vol.Required(CONF_NOTIFY_SCHEDULE, default=cfg.get(CONF_NOTIFY_SCHEDULE, DEFAULT_NOTIFY_SCHEDULE)): bool,
+                vol.Required(CONF_NOTIFY_PRESENCE, default=cfg.get(CONF_NOTIFY_PRESENCE, DEFAULT_NOTIFY_PRESENCE)): bool,
+                vol.Required(CONF_NOTIFY_SENSOR_FALLBACK, default=cfg.get(CONF_NOTIFY_SENSOR_FALLBACK, DEFAULT_NOTIFY_SENSOR_FALLBACK)): bool,
+            }
+        )
+        return self.async_show_form(step_id="notifications", data_schema=schema)
+
