@@ -101,6 +101,45 @@ You never need to edit YAML or reinstall. In Home Assistant:
 
 ---
 
+## 🎨 Custom Lovelace Thermostat Card (`smart-central-climate-card`)
+
+The integration includes a custom Lovelace card specifically crafted for dual-setpoint range systems, duct plenum diagnostics, and minimal fan management:
+
+![Smart Central Climate Card](https://raw.githubusercontent.com/Tinkergnome621/smart_central_climate/main/assets/circular_dual_thermostat_card_v5.jpg)
+
+### Card Features
+* **Dual-Knob Circular Arc Dial:** Smooth interactive touch/mouse dragging for Heat (orange) and Cool (blue) target setpoints with an emerald deadband buffer in between.
+* **Icon-Only Status Indicator:** Green thermometer for Idle in deadband, blue snowflake for active cooling, and red flame for active heating.
+* **Vertical Duct Plenum Stack (Left):** Real-time monitoring of Return Air intake (`temp / RH%`), live Delta-T split with optimal efficiency badge (`Drop / Rise`), and Supply Air output (`temp / RH%`).
+* **Minimal Blower Fan Toggle:** Minimalist circular fan icon with clean `FAN ON` / `FAN OFF` label underneath (sky blue with spinning animation when on, muted gray when off). Tap to toggle anytime!
+* **Centered Target Range & Temperature Breakdown:** Displays active targets, House Average temperature & humidity, and physical wall thermostat readings.
+* **One-Touch Mode & Preset Selection:** Instant switching between `Heat/Cool`, `Cool`, `Heat`, `Off` and all 6 comfort presets (`Eco`, `Comfort`, `Sleep`, `Away`, `Vacation`, `Hold`).
+
+### Adding the Card to your Dashboard
+
+**Option A (Automatic via Integration):**
+The integration automatically serves the card module. Simply add the resource in Home Assistant:
+1. Go to **Settings** > **Dashboards** > Three dots menu (**⋮**) > **Resources**.
+2. Click **Add Resource**.
+3. URL: `/smart_central_climate/smart-central-climate-card.js`
+4. Resource type: **JavaScript Module**.
+
+**Option B (Manual Copy):**
+1. Copy `smart-central-climate-card.js` into your Home Assistant `/config/www/` folder.
+2. Add resource URL: `/local/smart-central-climate-card.js` as **JavaScript Module**.
+
+### Lovelace Card YAML Configuration
+
+In your dashboard, click **Add Card** > **Manual** (or search for *Smart Central Climate Card* in the card picker):
+
+```yaml
+type: custom:smart-central-climate-card
+entity: climate.smart_central_climate
+name: Smart Central Climate
+```
+
+---
+
 ## 📋 Diagnostic Telemetry & State-Change Logging
 
 To provide full visibility during testing and operation, the integration logs structured diagnostics at the `INFO` level. Because Home Assistant only records `WARNING` and above in the system logs by default, add the following to your `configuration.yaml` and restart Home Assistant to view them under **Settings > System > Logs**:

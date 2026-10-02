@@ -71,10 +71,36 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     return True
 
 
+import os
+
+CARD_DIR = os.path.join(os.path.dirname(__file__), "frontend")
+CARD_PATH = os.path.join(CARD_DIR, "smart-central-climate-card.js")
+CARD_URL = "/smart_central_climate/smart-central-climate-card.js"
+
+
+async def _async_register_card_path(hass: HomeAssistant) -> None:
+    """Register custom card static path in Home Assistant HTTP."""
+    if not os.path.exists(CARD_PATH):
+        return
+    try:
+        if hasattr(hass.http, "async_register_static_paths"):
+            from homeassistant.components.http import StaticPathConfig
+            await hass.http.async_register_static_paths([
+                StaticPathConfig(CARD_URL, CARD_PATH, False)
+            ])
+        elif hasattr(hass.http, "register_static_path"):
+            hass.http.register_static_path(CARD_URL, CARD_PATH, cache_headers=False)
+        _LOGGER.info("Registered Smart Central Climate card static path: %s", CARD_URL)
+    except Exception as err:
+        _LOGGER.debug("Note: Card static path registration deferred or already registered: %s", err)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Smart Central Climate from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
+
+    await _async_register_card_path(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_update_options))

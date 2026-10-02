@@ -424,11 +424,21 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if fst:
                 fan_curr_state = fst.state
 
+        wall_temp = None
+        wall_hum = None
+        if self._target_climate:
+            wall_st = self.hass.states.get(self._target_climate)
+            if wall_st:
+                wall_temp = wall_st.attributes.get("current_temperature")
+                wall_hum = wall_st.attributes.get("current_humidity")
+
         return {
             "remote_sensor": self._temp_sensor,
             "active_sensor_source": self._active_sensor_source,
             "last_active_hvac_mode": self._last_active_hvac_mode,
             "target_climate": self._target_climate,
+            "wall_thermostat_temperature": wall_temp,
+            "wall_thermostat_humidity": wall_hum,
             "fan_entity": self._fan_entity,
             "fan_state": fan_curr_state,
             "indoor_humidity": self._current_humidity,
