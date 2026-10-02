@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="custom_components/smart_central_climate/brand/logo.png" alt="Smart Central Climate Logo" width="480">
+</p>
+
 # Smart Central Climate
 
 A custom Home Assistant integration designed specifically for **Central A/C and Heat Pump Systems**. It wraps your physical smart thermostat (like Meross Matter, Nest, Ecobee, Honeywell, Z-Wave) and links it with remote room temperature sensors, smart presence grace periods, built-in 4-slot daily schedules, vacation mode, compressor protection, and 3-tier failsafe regulation.
