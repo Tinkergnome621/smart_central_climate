@@ -140,6 +140,7 @@ _LOGGER = logging.getLogger(__name__)
 
 PRESET_VACATION = "vacation"
 SUPPORTED_PRESETS = [
+    PRESET_NONE,
     PRESET_COMFORT,
     PRESET_ECO,
     PRESET_AWAY,
@@ -276,6 +277,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._errand_timer_end: datetime | None = None
         self._immunity_timer_cancel = None
         self._immunity_timer_end: datetime | None = None
+        self._is_starting_up: bool = True
 
         self._listeners: list[Any] = []
 
@@ -371,7 +373,12 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if saved_last_active in (HVACMode.COOL, HVACMode.HEAT):
                 self._last_active_hvac_mode = HVACMode(saved_last_active)
 
-            # Restore Target Temperature with SANITY CLAMP
+            # 1. Restore Preset Mode FIRST
+            prev_preset = last_state.attributes.get("preset_mode")
+            if prev_preset in SUPPORTED_PRESETS or prev_preset == PRESET_NONE:
+                self._preset_mode = prev_preset
+
+            # 2. Restore Target Temperature with SANITY CLAMP
             prev_temp = last_state.attributes.get(ATTR_TEMPERATURE)
             if prev_temp is not None:
                 try:
@@ -381,25 +388,27 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     else:
                         _LOGGER.warning(
                             "[CORRUPTED SETPOINT RECOVERED] Restored target temperature %.1f°F is outside safe residential limits (60-85°F). "
-                            "Auto-recovering setpoint to safe Comfort target.",
+                            "Auto-recovering setpoint to safe target for preset '%s'.",
                             val,
+                            self._preset_mode,
                         )
                         active_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.COOL
-                        self._target_temperature = self._preset_targets.get(active_mode, {}).get(PRESET_COMFORT, 72.0)
-                        self._preset_mode = PRESET_COMFORT
+                        if self._preset_mode in self._preset_targets.get(active_mode, {}):
+                            self._target_temperature = self._preset_targets[active_mode][self._preset_mode]
+                        else:
+                            self._target_temperature = self._preset_targets.get(active_mode, {}).get(PRESET_COMFORT, 72.0)
+                            self._preset_mode = PRESET_COMFORT
                 except ValueError:
                     pass
-
-            # Restore Preset Mode
-            prev_preset = last_state.attributes.get("preset_mode")
-            if prev_preset in SUPPORTED_PRESETS:
-                self._preset_mode = prev_preset
 
         # Final sanity check: ensure target temperature is strictly within 60.0°F - 85.0°F
         if self._target_temperature < 60.0 or self._target_temperature > 85.0:
             active_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.COOL
-            self._target_temperature = self._preset_targets.get(active_mode, {}).get(PRESET_COMFORT, 72.0)
-            self._preset_mode = PRESET_COMFORT
+            if self._preset_mode in self._preset_targets.get(active_mode, {}):
+                self._target_temperature = self._preset_targets[active_mode][self._preset_mode]
+            else:
+                self._target_temperature = self._preset_targets.get(active_mode, {}).get(PRESET_COMFORT, 72.0)
+                self._preset_mode = PRESET_COMFORT
 
         _LOGGER.info(
             "[TEST LOG][RESTORE] Active state initialized: Mode=%s, Target=%.1f°F, Preset=%s",
@@ -464,6 +473,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         # 9. Startup hook using HA async_at_started helper (works on both cold boot and live reload)
         async def _async_startup(_: HomeAssistant) -> None:
+            # Unit system check: warn if Home Assistant is configured with metric units
+            if self.hass.config.units.temperature_unit != UnitOfTemperature.FAHRENHEIT:
+                _LOGGER.warning(
+                    "[UNIT CONFIG WARNING] Home Assistant temperature unit is '%s'. Smart Central Climate is engineered "
+                    "for Fahrenheit (°F) with built-in residential safety bounds (60°F - 85°F) and 65°F freeze protection. "
+                    "Ensure Settings -> System -> General -> Unit system is set to US Customary to prevent unintended regulation.",
+                    self.hass.config.units.temperature_unit,
+                )
+
             # Preserve Vacation mode and manual holds strictly on reboot!
             if self._preset_mode in (PRESET_VACATION, PRESET_NONE):
                 _LOGGER.info("Startup check: Preserving active %s preset across restart.", self._preset_mode)
@@ -472,6 +490,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
             await self._async_evaluate_regulation()
             self._log_telemetry_snapshot("Startup Initialization")
+            self._is_starting_up = False
 
         async_at_started(self.hass, _async_startup)
 
@@ -578,9 +597,14 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self.async_write_ha_state()
         self._notify_switch()
 
-    async def async_set_preset_mode(self, preset_mode: str, reason: str = "User selection via UI or service call") -> None:
+    async def async_set_preset_mode(
+        self,
+        preset_mode: str,
+        reason: str = "User selection via UI or service call",
+        notify: bool = True,
+    ) -> None:
         """Set new preset mode."""
-        if preset_mode not in SUPPORTED_PRESETS:
+        if preset_mode not in SUPPORTED_PRESETS and preset_mode != PRESET_NONE:
             return
 
         old_preset = self._preset_mode
@@ -614,7 +638,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         await self._async_evaluate_regulation()
 
-        if old_preset != preset_mode:
+        if old_preset != preset_mode and notify and not self._is_starting_up:
             target_str = f" (Target: {self._target_temperature}°F)" if self._target_temperature else ""
             self.hass.async_create_task(
                 self._async_send_notification(
@@ -632,10 +656,13 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if self._enable_schedule:
             self._async_sync_schedule_to_current_time()
         else:
-            await self.async_set_preset_mode(PRESET_COMFORT)
+            await self.async_set_preset_mode(PRESET_COMFORT, notify=False)
 
     async def _async_send_notification(self, title: str, message: str, notification_type: str) -> None:
         """Dispatch a notification based on user configuration."""
+        if self._is_starting_up:
+            return
+
         enabled = False
         if notification_type == "hvac_mode" and self._notify_hvac_mode:
             enabled = True
@@ -663,32 +690,16 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         )
 
         service = self._notify_service or "notify.persistent_notification"
-        try:
-            if "." in service:
-                domain, service_name = service.split(".", 1)
-                if domain == "persistent_notification":
-                    await self.hass.services.async_call(
-                        "persistent_notification",
-                        "create",
-                        {
-                            "title": title,
-                            "message": message,
-                            "notification_id": f"{DOMAIN}_{notification_type}",
-                        },
-                        blocking=False,
-                    )
-                    return
+        if service and "." not in service:
+            _LOGGER.warning(
+                "Configured notification service '%s' is missing domain prefix. Automatically prefixing with 'notify.'.",
+                service,
+            )
+            service = f"notify.{service}"
 
-                await self.hass.services.async_call(
-                    domain,
-                    service_name,
-                    {
-                        "title": title,
-                        "message": message,
-                    },
-                    blocking=False,
-                )
-            else:
+        try:
+            domain, service_name = service.split(".", 1)
+            if domain == "persistent_notification":
                 await self.hass.services.async_call(
                     "persistent_notification",
                     "create",
@@ -699,6 +710,34 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     },
                     blocking=False,
                 )
+                return
+
+            if not self.hass.services.has_service(domain, service_name):
+                _LOGGER.warning(
+                    "Notification target service '%s' is not registered in Home Assistant. Falling back to persistent notifications.",
+                    service,
+                )
+                await self.hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": title,
+                        "message": message,
+                        "notification_id": f"{DOMAIN}_{notification_type}",
+                    },
+                    blocking=False,
+                )
+                return
+
+            await self.hass.services.async_call(
+                domain,
+                service_name,
+                {
+                    "title": title,
+                    "message": message,
+                },
+                blocking=False,
+            )
         except Exception as err:
             _LOGGER.warning("Failed to dispatch %s notification via %s: %s", notification_type, service, err)
 
@@ -831,6 +870,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             self.async_set_preset_mode(
                 slot_preset,
                 reason=f"Schedule synced to active slot: {self._last_scheduled_slot}",
+                notify=False,
             )
         )
 
@@ -870,6 +910,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     await self.async_set_preset_mode(
                         slot_preset,
                         reason=f"Scheduled slot '{slot_name}' reached",
+                        notify=False,
                     )
                 break
 
@@ -1154,7 +1195,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     async def _async_call_physical_heating(self, target_temp: float) -> None:
         """Command physical thermostat to Heat and set safe temperature."""
-        safe_target = max(58.0, min(82.0, round(target_temp, 1)))
+        safe_target = max(60.0, min(82.0, round(target_temp, 1)))
         self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
 
         physical_state = self.hass.states.get(self._target_climate)
@@ -1187,7 +1228,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
     async def _async_call_physical_safe_handoff(self, target_temp: float) -> None:
         """Engage Tier 3 failsafe: Hand over normal setpoint with 0 offset to physical thermostat."""
         desired_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.OFF
-        safe_target = max(60.0, min(80.0, round(target_temp, 1)))
+        safe_target = max(60.0, min(85.0, round(target_temp, 1)))
         self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
 
         await self.hass.services.async_call(
@@ -1539,6 +1580,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                         self.async_set_preset_mode(
                             PRESET_AWAY,
                             reason=f"Errand grace timer ({self._errand_delay}m) expired without residents returning",
+                            notify=False,
                         )
                     )
                     self.hass.async_create_task(
@@ -1583,6 +1625,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     await self.async_set_preset_mode(
                         PRESET_COMFORT,
                         reason="Resident returned home (Welcome Home trigger)",
+                        notify=False,
                     )
 
             self.async_write_ha_state()
@@ -1612,6 +1655,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     self.async_set_preset_mode(
                         PRESET_AWAY,
                         reason=f"Pre-cooling immunity window ({self._immunity_duration}m) expired with no residents home",
+                        notify=False,
                     )
                 )
                 self.hass.async_create_task(

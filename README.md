@@ -95,7 +95,16 @@ You never need to edit YAML or reinstall. In Home Assistant:
 
 ## 📋 Diagnostic Telemetry & State-Change Logging
 
-To provide full visibility during testing and operation, the integration logs structured diagnostics at the standard `INFO` level (visible directly in `Settings > System > Logs` without needing extra YAML logging config):
+To provide full visibility during testing and operation, the integration logs structured diagnostics at the `INFO` level. Because Home Assistant only records `WARNING` and above in the system logs by default, add the following to your `configuration.yaml` and restart Home Assistant to view them under **Settings > System > Logs**:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.smart_central_climate: info
+```
+
+> **Tip:** You can also temporarily view detailed logs without editing YAML by navigating to **Settings > Devices & Services > Smart Central Climate**, clicking the three dots menu (**⋮**), and selecting **Enable debug logging**. When disabled, Home Assistant will prompt you to download the captured log file.
 
 * **5-Minute Telemetry Snapshot (`[TEST LOG][5-MINUTE HEARTBEAT]`):**
   Logs effective room temperature, remote sensor reading, wall thermostat ambient probe, target setpoints, active dynamic offsets, system mode & action, physical hardware state, compressor run/dwell times, schedule slots, and presence timers.
@@ -108,10 +117,12 @@ To provide full visibility during testing and operation, the integration logs st
 
 ---
 
-## 🛡️ Emergency Freeze Protection & Dial Safety (v1.4.2)
+## 🛡️ Emergency Freeze Protection & Dial Safety (v1.4.2+)
 
 * **Hard Low-Temperature Freeze Cutoff:** If cooling is active and the room or average house temperature reaches **65.0°F (18.3°C)** or lower, cooling is unconditionally aborted immediately to protect household comfort and prevent frozen evaporator coils.
 * **Dial Sync Echo Suppression:** Built-in 15-second command suppression window prevents physical thermostat echo loops from misinterpreting internal hardware offset targets as manual user adjustments.
-* **Startup Safe Bounds Auto-Healing:** Target setpoints are strictly bounded between 60.0°F and 85.0°F. If an out-of-bounds setpoint was previously saved to Home Assistant storage, the integration automatically heals and restores it to safe Comfort defaults (72.0°F) upon startup.
+* **Startup Safe Bounds Auto-Healing:** Target setpoints are strictly bounded between 60.0°F and 85.0°F. If an out-of-bounds setpoint was previously saved to Home Assistant storage, the integration automatically heals and restores it to safe preset defaults upon startup.
+* **Manual Holds Preserved Across Restarts:** Full support for `PRESET_NONE` ensures hand-adjusted setpoints or wall-dial turns persist safely across reboots and option updates without being overridden by daily schedules.
+* **Streamlined Notifications:** Preset change notifications default to disabled to prevent alert fatigue, duplicate notifications during presence/errand transitions are eliminated, and target services without the `notify.` prefix are auto-normalized with service registry validation.
 
 

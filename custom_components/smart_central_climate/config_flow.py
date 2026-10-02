@@ -163,18 +163,18 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_MIN_CYCLE_DURATION, default=DEFAULT_MIN_CYCLE_DURATION): vol.Coerce(int),
                 vol.Required(CONF_ERRAND_DELAY, default=DEFAULT_ERRAND_DELAY): vol.Coerce(int),
                 vol.Required(CONF_IMMUNITY_DURATION, default=DEFAULT_IMMUNITY_DURATION): vol.Coerce(int),
-                vol.Required(CONF_COMFORT_COOL, default=DEFAULT_COMFORT_COOL): vol.Coerce(float),
-                vol.Required(CONF_COMFORT_HEAT, default=DEFAULT_COMFORT_HEAT): vol.Coerce(float),
-                vol.Required(CONF_ECO_COOL, default=DEFAULT_ECO_COOL): vol.Coerce(float),
-                vol.Required(CONF_ECO_HEAT, default=DEFAULT_ECO_HEAT): vol.Coerce(float),
-                vol.Required(CONF_AWAY_COOL, default=DEFAULT_AWAY_COOL): vol.Coerce(float),
-                vol.Required(CONF_AWAY_HEAT, default=DEFAULT_AWAY_HEAT): vol.Coerce(float),
-                vol.Required(CONF_SLEEP_COOL, default=DEFAULT_SLEEP_COOL): vol.Coerce(float),
-                vol.Required(CONF_SLEEP_HEAT, default=DEFAULT_SLEEP_HEAT): vol.Coerce(float),
-                vol.Required(CONF_BOOST_COOL, default=DEFAULT_BOOST_COOL): vol.Coerce(float),
-                vol.Required(CONF_BOOST_HEAT, default=DEFAULT_BOOST_HEAT): vol.Coerce(float),
-                vol.Required(CONF_VACATION_COOL, default=DEFAULT_VACATION_COOL): vol.Coerce(float),
-                vol.Required(CONF_VACATION_HEAT, default=DEFAULT_VACATION_HEAT): vol.Coerce(float),
+                vol.Required(CONF_COMFORT_COOL, default=DEFAULT_COMFORT_COOL): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_COMFORT_HEAT, default=DEFAULT_COMFORT_HEAT): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_ECO_COOL, default=DEFAULT_ECO_COOL): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_ECO_HEAT, default=DEFAULT_ECO_HEAT): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_AWAY_COOL, default=DEFAULT_AWAY_COOL): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_AWAY_HEAT, default=DEFAULT_AWAY_HEAT): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_SLEEP_COOL, default=DEFAULT_SLEEP_COOL): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_SLEEP_HEAT, default=DEFAULT_SLEEP_HEAT): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_BOOST_COOL, default=DEFAULT_BOOST_COOL): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_BOOST_HEAT, default=DEFAULT_BOOST_HEAT): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_VACATION_COOL, default=DEFAULT_VACATION_COOL): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_VACATION_HEAT, default=DEFAULT_VACATION_HEAT): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
             }
         )
 
@@ -235,6 +235,9 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Step 4: Configure notification triggers and service."""
         if user_input is not None:
+            service = str(user_input.get(CONF_NOTIFY_SERVICE, "")).strip()
+            if service and "." not in service:
+                user_input[CONF_NOTIFY_SERVICE] = f"notify.{service}"
             self._data.update(user_input)
             return self.async_create_entry(
                 title=self._data.get("name", "Smart Central A/C"), data=self._data
@@ -294,18 +297,18 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(CONF_HEATING_SWING, default=cfg.get(CONF_HEATING_SWING, DEFAULT_HEATING_SWING)): vol.Coerce(float),
                 vol.Required(CONF_COOLING_OFFSET, default=cfg.get(CONF_COOLING_OFFSET, DEFAULT_COOLING_OFFSET)): vol.Coerce(float),
                 vol.Required(CONF_HEATING_OFFSET, default=cfg.get(CONF_HEATING_OFFSET, DEFAULT_HEATING_OFFSET)): vol.Coerce(float),
-                vol.Required(CONF_COMFORT_COOL, default=cfg.get(CONF_COMFORT_COOL, DEFAULT_COMFORT_COOL)): vol.Coerce(float),
-                vol.Required(CONF_COMFORT_HEAT, default=cfg.get(CONF_COMFORT_HEAT, DEFAULT_COMFORT_HEAT)): vol.Coerce(float),
-                vol.Required(CONF_ECO_COOL, default=cfg.get(CONF_ECO_COOL, DEFAULT_ECO_COOL)): vol.Coerce(float),
-                vol.Required(CONF_ECO_HEAT, default=cfg.get(CONF_ECO_HEAT, DEFAULT_ECO_HEAT)): vol.Coerce(float),
-                vol.Required(CONF_AWAY_COOL, default=cfg.get(CONF_AWAY_COOL, DEFAULT_AWAY_COOL)): vol.Coerce(float),
-                vol.Required(CONF_AWAY_HEAT, default=cfg.get(CONF_AWAY_HEAT, DEFAULT_AWAY_HEAT)): vol.Coerce(float),
-                vol.Required(CONF_SLEEP_COOL, default=cfg.get(CONF_SLEEP_COOL, DEFAULT_SLEEP_COOL)): vol.Coerce(float),
-                vol.Required(CONF_SLEEP_HEAT, default=cfg.get(CONF_SLEEP_HEAT, DEFAULT_SLEEP_HEAT)): vol.Coerce(float),
-                vol.Required(CONF_BOOST_COOL, default=cfg.get(CONF_BOOST_COOL, DEFAULT_BOOST_COOL)): vol.Coerce(float),
-                vol.Required(CONF_BOOST_HEAT, default=cfg.get(CONF_BOOST_HEAT, DEFAULT_BOOST_HEAT)): vol.Coerce(float),
-                vol.Required(CONF_VACATION_COOL, default=cfg.get(CONF_VACATION_COOL, DEFAULT_VACATION_COOL)): vol.Coerce(float),
-                vol.Required(CONF_VACATION_HEAT, default=cfg.get(CONF_VACATION_HEAT, DEFAULT_VACATION_HEAT)): vol.Coerce(float),
+                vol.Required(CONF_COMFORT_COOL, default=cfg.get(CONF_COMFORT_COOL, DEFAULT_COMFORT_COOL)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_COMFORT_HEAT, default=cfg.get(CONF_COMFORT_HEAT, DEFAULT_COMFORT_HEAT)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_ECO_COOL, default=cfg.get(CONF_ECO_COOL, DEFAULT_ECO_COOL)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_ECO_HEAT, default=cfg.get(CONF_ECO_HEAT, DEFAULT_ECO_HEAT)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_AWAY_COOL, default=cfg.get(CONF_AWAY_COOL, DEFAULT_AWAY_COOL)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_AWAY_HEAT, default=cfg.get(CONF_AWAY_HEAT, DEFAULT_AWAY_HEAT)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_SLEEP_COOL, default=cfg.get(CONF_SLEEP_COOL, DEFAULT_SLEEP_COOL)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_SLEEP_HEAT, default=cfg.get(CONF_SLEEP_HEAT, DEFAULT_SLEEP_HEAT)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_BOOST_COOL, default=cfg.get(CONF_BOOST_COOL, DEFAULT_BOOST_COOL)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_BOOST_HEAT, default=cfg.get(CONF_BOOST_HEAT, DEFAULT_BOOST_HEAT)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_VACATION_COOL, default=cfg.get(CONF_VACATION_COOL, DEFAULT_VACATION_COOL)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
+                vol.Required(CONF_VACATION_HEAT, default=cfg.get(CONF_VACATION_HEAT, DEFAULT_VACATION_HEAT)): vol.All(vol.Coerce(float), vol.Range(min=60, max=85)),
             }
         )
         return self.async_show_form(step_id="temperatures", data_schema=schema)
@@ -396,6 +399,9 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
     ) -> config_entries.ConfigFlowResult:
         """Modify notification triggers and service."""
         if user_input is not None:
+            service = str(user_input.get(CONF_NOTIFY_SERVICE, "")).strip()
+            if service and "." not in service:
+                user_input[CONF_NOTIFY_SERVICE] = f"notify.{service}"
             self._options.update(user_input)
             return self.async_create_entry(title="", data=self._options)
 
