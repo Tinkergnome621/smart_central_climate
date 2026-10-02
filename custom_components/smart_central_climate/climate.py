@@ -265,6 +265,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._last_sent_physical_mode: str | None = None
         self._last_sent_target_temp: float | None = None
         self._physical_last_reported_target: float | None = None
+        self._ignore_physical_target_until: datetime | None = None
 
         # Safety & Cycle Timestamps
         self._last_cycle_start: datetime | None = None
@@ -370,24 +371,42 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if saved_last_active in (HVACMode.COOL, HVACMode.HEAT):
                 self._last_active_hvac_mode = HVACMode(saved_last_active)
 
-            # Restore Target Temperature
+            # Restore Target Temperature with SANITY CLAMP
             prev_temp = last_state.attributes.get(ATTR_TEMPERATURE)
             if prev_temp is not None:
                 try:
-                    self._target_temperature = float(prev_temp)
+                    val = float(prev_temp)
+                    if 60.0 <= val <= 85.0:
+                        self._target_temperature = val
+                    else:
+                        _LOGGER.warning(
+                            "[CORRUPTED SETPOINT RECOVERED] Restored target temperature %.1f°F is outside safe residential limits (60-85°F). "
+                            "Auto-recovering setpoint to safe Comfort target.",
+                            val,
+                        )
+                        active_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.COOL
+                        self._target_temperature = self._preset_targets.get(active_mode, {}).get(PRESET_COMFORT, 72.0)
+                        self._preset_mode = PRESET_COMFORT
                 except ValueError:
                     pass
+
             # Restore Preset Mode
             prev_preset = last_state.attributes.get("preset_mode")
             if prev_preset in SUPPORTED_PRESETS:
                 self._preset_mode = prev_preset
 
-            _LOGGER.info(
-                "[TEST LOG][RESTORE] Restored state from storage: Mode=%s, Target=%.1f°F, Preset=%s",
-                self._hvac_mode.value.upper(),
-                self._target_temperature,
-                self._preset_mode.upper(),
-            )
+        # Final sanity check: ensure target temperature is strictly within 60.0°F - 85.0°F
+        if self._target_temperature < 60.0 or self._target_temperature > 85.0:
+            active_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.COOL
+            self._target_temperature = self._preset_targets.get(active_mode, {}).get(PRESET_COMFORT, 72.0)
+            self._preset_mode = PRESET_COMFORT
+
+        _LOGGER.info(
+            "[TEST LOG][RESTORE] Active state initialized: Mode=%s, Target=%.1f°F, Preset=%s",
+            self._hvac_mode.value.upper(),
+            self._target_temperature,
+            self._preset_mode.upper(),
+        )
 
         # 2. Inspect physical thermostat's initial state
         phys_state = self.hass.states.get(self._target_climate)
@@ -396,8 +415,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             temp_attr = phys_state.attributes.get(ATTR_TEMPERATURE)
             if temp_attr is not None:
                 try:
-                    self._physical_last_reported_target = float(temp_attr)
-                    self._last_sent_target_temp = float(temp_attr)
+                    val = float(temp_attr)
+                    if 60.0 <= val <= 85.0:
+                        self._physical_last_reported_target = val
+                        self._last_sent_target_temp = val
                 except ValueError:
                     pass
 
@@ -519,7 +540,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             await self._async_call_physical_off()
         else:
             if self._preset_mode in self._preset_targets.get(hvac_mode, {}):
-                self._target_temperature = self._preset_targets[hvac_mode][self._preset_mode]
+                raw_target = self._preset_targets[hvac_mode][self._preset_mode]
+                self._target_temperature = max(60.0, min(85.0, raw_target))
             await self._async_evaluate_regulation()
 
         if old_mode != hvac_mode:
@@ -540,7 +562,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if temp is None:
             return
 
-        new_temp = float(temp)
+        new_temp = max(60.0, min(85.0, round(float(temp), 1)))
         old_temp = self._target_temperature
         old_preset = self._preset_mode
         self._target_temperature = new_temp
@@ -578,7 +600,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # Update setpoint from preset if mode is Cool or Heat
         if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
             if preset_mode in self._preset_targets[self._hvac_mode]:
-                self._target_temperature = self._preset_targets[self._hvac_mode][preset_mode]
+                raw_target = self._preset_targets[self._hvac_mode][preset_mode]
+                self._target_temperature = max(60.0, min(85.0, raw_target))
 
         if old_preset != preset_mode:
             _LOGGER.info(
@@ -919,7 +942,25 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         now = dt_util.utcnow()
         min_cycle = timedelta(minutes=self._min_cycle_duration)
-        min_limit, max_limit = self._get_physical_limits()
+        raw_min, raw_max = self._get_physical_limits()
+        # Enforce strict residential safety limits (Never command cooling below 62°F or heating above 82°F)
+        min_limit = max(62.0, raw_min)
+        max_limit = min(82.0, raw_max)
+
+        # --- FREEZE PROTECTION LOCKOUT ---
+        # If room temperature drops <= 65.0°F, NEVER run cooling!
+        if self._hvac_mode == HVACMode.COOL and self._current_temperature is not None and self._current_temperature <= 65.0:
+            if self._hvac_action == HVACAction.COOLING:
+                run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                _LOGGER.warning(
+                    "[TEST LOG][FREEZE GUARD] Room temperature (%.1f°F) is <= 65.0°F! Emergency halting cooling cycle to protect home and HVAC coils.",
+                    self._current_temperature,
+                )
+                self._last_cycle_stop = now
+                self._hvac_action = HVACAction.IDLE
+            await self._async_call_physical_off()
+            self.async_write_ha_state()
+            return
 
         # --- COOLING MODE (True 1-Sided Swing & Safe Cooling Offset) ---
         if self._hvac_mode == HVACMode.COOL:
@@ -1081,6 +1122,9 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     async def _async_call_physical_cooling(self, target_temp: float) -> None:
         """Command physical thermostat to Cool and set safe temperature."""
+        safe_target = max(62.0, min(85.0, round(target_temp, 1)))
+        self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
+
         physical_state = self.hass.states.get(self._target_climate)
         cur_mode = physical_state.state if physical_state else None
         cur_temp = None
@@ -1099,17 +1143,20 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             )
             self._last_sent_physical_mode = HVACMode.COOL
 
-        if cur_temp is None or abs(cur_temp - target_temp) >= 0.5 or (self._last_sent_target_temp is None or abs(self._last_sent_target_temp - target_temp) >= 0.5):
+        if cur_temp is None or abs(cur_temp - safe_target) >= 0.5 or (self._last_sent_target_temp is None or abs(self._last_sent_target_temp - safe_target) >= 0.5):
             await self.hass.services.async_call(
                 "climate",
                 "set_temperature",
-                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: target_temp},
+                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: safe_target},
                 blocking=False,
             )
-            self._last_sent_target_temp = target_temp
+            self._last_sent_target_temp = safe_target
 
     async def _async_call_physical_heating(self, target_temp: float) -> None:
         """Command physical thermostat to Heat and set safe temperature."""
+        safe_target = max(58.0, min(82.0, round(target_temp, 1)))
+        self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
+
         physical_state = self.hass.states.get(self._target_climate)
         cur_mode = physical_state.state if physical_state else None
         cur_temp = None
@@ -1128,18 +1175,21 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             )
             self._last_sent_physical_mode = HVACMode.HEAT
 
-        if cur_temp is None or abs(cur_temp - target_temp) >= 0.5 or (self._last_sent_target_temp is None or abs(self._last_sent_target_temp - target_temp) >= 0.5):
+        if cur_temp is None or abs(cur_temp - safe_target) >= 0.5 or (self._last_sent_target_temp is None or abs(self._last_sent_target_temp - safe_target) >= 0.5):
             await self.hass.services.async_call(
                 "climate",
                 "set_temperature",
-                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: target_temp},
+                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: safe_target},
                 blocking=False,
             )
-            self._last_sent_target_temp = target_temp
+            self._last_sent_target_temp = safe_target
 
     async def _async_call_physical_safe_handoff(self, target_temp: float) -> None:
         """Engage Tier 3 failsafe: Hand over normal setpoint with 0 offset to physical thermostat."""
         desired_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.OFF
+        safe_target = max(60.0, min(80.0, round(target_temp, 1)))
+        self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
+
         await self.hass.services.async_call(
             "climate",
             "set_hvac_mode",
@@ -1152,13 +1202,14 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             await self.hass.services.async_call(
                 "climate",
                 "set_temperature",
-                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: target_temp},
+                {ATTR_ENTITY_ID: self._target_climate, ATTR_TEMPERATURE: safe_target},
                 blocking=False,
             )
-            self._last_sent_target_temp = target_temp
+            self._last_sent_target_temp = safe_target
 
     async def _async_call_physical_off(self) -> None:
         """Shut off physical thermostat and ensure fan entity is not held in continuous on."""
+        self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
         physical_state = self.hass.states.get(self._target_climate)
         cur_mode = physical_state.state if physical_state else None
 
@@ -1352,13 +1403,16 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
             # Sync setpoint for the new season/mode from preset targets
             if self._preset_mode in self._preset_targets.get(self._hvac_mode, {}):
-                self._target_temperature = self._preset_targets[self._hvac_mode][self._preset_mode]
+                raw_target = self._preset_targets[self._hvac_mode][self._preset_mode]
+                self._target_temperature = max(60.0, min(85.0, raw_target))
             self._last_sent_target_temp = self._target_temperature
 
             temp_attr = new_state.attributes.get(ATTR_TEMPERATURE)
             if temp_attr is not None:
                 try:
-                    self._physical_last_reported_target = float(temp_attr)
+                    val = float(temp_attr)
+                    if 60.0 <= val <= 85.0:
+                        self._physical_last_reported_target = val
                 except (ValueError, TypeError):
                     pass
 
@@ -1368,40 +1422,54 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             return
 
         # 3. Handle Dial Target Temperature Adjustments
+        # STRICT SAFETY GUARD A: If wall unit is OFF or integration is OFF, NEVER sync temperature adjustments!
+        if new_state.state == HVACMode.OFF or self._hvac_mode == HVACMode.OFF:
+            return
+
+        # STRICT SAFETY GUARD B: Echo suppression window (reject echoes of our own recent commands)
+        now = dt_util.utcnow()
+        if self._ignore_physical_target_until and now < self._ignore_physical_target_until:
+            return
+
         target_temp = new_state.attributes.get(ATTR_TEMPERATURE)
         if target_temp is not None:
             try:
                 new_target = float(target_temp)
-                # Only react if the physical thermostat's reported target genuinely changed
-                # AND it does not match what we last sent it!
-                if (
-                    self._physical_last_reported_target is not None
-                    and abs(new_target - self._physical_last_reported_target) >= 0.5
-                    and (self._last_sent_target_temp is None or abs(new_target - self._last_sent_target_temp) >= 0.5)
-                ):
-                    # Check if an offset was active during heating/cooling
-                    if self._hvac_action in (HVACAction.COOLING, HVACAction.HEATING) and self._last_sent_target_temp is not None:
-                        delta = new_target - self._last_sent_target_temp
-                        new_user_target = round(self._target_temperature + delta, 1)
-                    else:
-                        new_user_target = new_target
 
-                    _LOGGER.info(
-                        "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: User physically turned wall thermostat dial to %.1f°F.",
-                        self._target_temperature,
-                        new_user_target,
-                        self._preset_mode.upper(),
+                # STRICT SAFETY GUARD C: Reject frost-guard or out-of-range temperatures (<60°F or >85°F)
+                if new_target < 60.0 or new_target > 85.0:
+                    _LOGGER.debug(
+                        "Ignoring physical thermostat target %.1f°F outside safe residential range (60-85°F).",
                         new_target,
                     )
-                    self._target_temperature = new_user_target
-                    self._preset_mode = PRESET_NONE
-                    self._last_sent_target_temp = new_target
-                    await self._async_evaluate_regulation()
-                    self.async_write_ha_state()
-                    self._notify_switch()
+                    return
+
+                # Genuine user adjustment check (must differ by at least 1.0°F from sent and reported to reject rounding jitter)
+                if (
+                    self._physical_last_reported_target is not None
+                    and abs(new_target - self._physical_last_reported_target) >= 1.0
+                    and (self._last_sent_target_temp is None or abs(new_target - self._last_sent_target_temp) >= 1.0)
+                ):
+                    new_user_target = max(60.0, min(85.0, round(new_target, 1)))
+
+                    if abs(new_user_target - self._target_temperature) >= 0.5:
+                        _LOGGER.info(
+                            "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: User physically turned wall thermostat dial to %.1f°F.",
+                            self._target_temperature,
+                            new_user_target,
+                            self._preset_mode.upper(),
+                            new_target,
+                        )
+                        self._target_temperature = new_user_target
+                        self._preset_mode = PRESET_NONE
+                        self._physical_last_reported_target = new_target
+                        self._ignore_physical_target_until = now + timedelta(seconds=15)
+                        await self._async_evaluate_regulation()
+                        self.async_write_ha_state()
+                        self._notify_switch()
 
                 self._physical_last_reported_target = new_target
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
 
     def _is_presence_home(self) -> bool:

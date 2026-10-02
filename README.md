@@ -103,6 +103,15 @@ To provide full visibility during testing and operation, the integration logs st
   Every change to HVAC Mode, HVAC Action, Target Temperature, Preset, or Sensor Fallback logs both the old and new state along with the precise reason/trigger that caused the transition.
 * **HVAC Start / Stop Events (`[TEST LOG][HVAC START]` & `[TEST LOG][HVAC STOP]`):**
   Explicitly logs when cooling or heating cycles start and stop, including active activation/satisfaction thresholds, cycle runtime durations, and setpoints.
-* **Cycle Delays & Safety Guards (`[TEST LOG][CYCLE DELAY]`):**
-  Logs when heating or cooling demand is held by anti-short-cycle dwell times or minimum runtime safety locks.
+* **Cycle Delays & Safety Guards (`[TEST LOG][CYCLE DELAY]` & `[FREEZE GUARD]`):**
+  Logs when heating or cooling demand is held by anti-short-cycle dwell times or minimum runtime safety locks, as well as emergency shutdowns if room temperature drops below the hard safety limit (65.0°F).
+
+---
+
+## 🛡️ Emergency Freeze Protection & Dial Safety (v1.4.2)
+
+* **Hard Low-Temperature Freeze Cutoff:** If cooling is active and the room or average house temperature reaches **65.0°F (18.3°C)** or lower, cooling is unconditionally aborted immediately to protect household comfort and prevent frozen evaporator coils.
+* **Dial Sync Echo Suppression:** Built-in 15-second command suppression window prevents physical thermostat echo loops from misinterpreting internal hardware offset targets as manual user adjustments.
+* **Startup Safe Bounds Auto-Healing:** Target setpoints are strictly bounded between 60.0°F and 85.0°F. If an out-of-bounds setpoint was previously saved to Home Assistant storage, the integration automatically heals and restores it to safe Comfort defaults (72.0°F) upon startup.
+
 
