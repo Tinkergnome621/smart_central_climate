@@ -115,18 +115,16 @@ The integration includes a custom Lovelace card specifically crafted for dual-se
 * **Centered Target Range & Temperature Breakdown:** Displays active targets, House Average temperature & humidity, and physical wall thermostat readings.
 * **One-Touch Mode & Preset Selection:** Instant switching between `Heat/Cool`, `Cool`, `Heat`, `Off` and all 6 comfort presets (`Eco`, `Comfort`, `Sleep`, `Away`, `Vacation`, `Hold`).
 
-### Adding the Card to your Dashboard
+### Installing the Card via HACS (Recommended)
+1. Open Home Assistant > **HACS** > **Frontend** (or **Dashboards**).
+2. Click the three dots menu (**⋮**) > **Custom repositories**.
+3. Add repository URL: `https://github.com/Tinkergnome621/smart-central-climate-card` (Category: **Dashboard** / **Lovelace**).
+4. Click **Download**, then reload your browser when prompted.
 
-**Option A (Automatic via Integration):**
-The integration automatically serves the card module. Simply add the resource in Home Assistant:
-1. Go to **Settings** > **Dashboards** > Three dots menu (**⋮**) > **Resources**.
-2. Click **Add Resource**.
-3. URL: `/smart_central_climate/smart-central-climate-card.js`
-4. Resource type: **JavaScript Module**.
-
-**Option B (Manual Copy):**
-1. Copy `smart-central-climate-card.js` into your Home Assistant `/config/www/` folder.
-2. Add resource URL: `/local/smart-central-climate-card.js` as **JavaScript Module**.
+### Manual Installation
+1. Download [`smart-central-climate-card.js`](https://github.com/Tinkergnome621/smart-central-climate-card/releases/latest/download/smart-central-climate-card.js) from the card repository.
+2. Copy it into your Home Assistant `/config/www/` directory.
+3. In **Settings** > **Dashboards** > Three dots menu (**⋮**) > **Resources**, add URL `/local/smart-central-climate-card.js` as **JavaScript Module**.
 
 ### Lovelace Card YAML Configuration
 

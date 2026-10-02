@@ -282,6 +282,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._logged_sensor_fallback: bool = False
         self._logged_emergency_fallback: bool = False
         self._last_scheduled_slot: str | None = None
+        self._user_fan_mode: str = "auto"
 
         # Two-Way Dial Sync & Hardware State Tracking
         self._last_sent_physical_mode: str | None = None
@@ -387,19 +388,18 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         """Return current fan mode."""
         if not self._fan_entity:
             return None
-        fst = self.hass.states.get(self._fan_entity)
-        if fst and fst.state == STATE_ON:
-            return "on"
-        return "auto"
+        return self._user_fan_mode
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set fan mode (toggle blower between On and Auto)."""
         if not self._fan_entity:
             return
+        self._user_fan_mode = fan_mode
         if fan_mode == "on":
             await self.hass.services.async_call("fan", "turn_on", {ATTR_ENTITY_ID: self._fan_entity}, blocking=False)
         else:
-            await self.hass.services.async_call("fan", "turn_off", {ATTR_ENTITY_ID: self._fan_entity}, blocking=False)
+            if self._hvac_action not in (HVACAction.COOLING, HVACAction.HEATING):
+                await self.hass.services.async_call("fan", "turn_off", {ATTR_ENTITY_ID: self._fan_entity}, blocking=False)
         self.async_write_ha_state()
 
     @property
@@ -482,12 +482,16 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             # Restore HVAC Mode
             if last_state.state in self.hvac_modes:
                 self._hvac_mode = HVACMode(last_state.state)
-                if last_state.state in (HVACMode.COOL, HVACMode.HEAT):
+                if last_state.state in (HVACMode.COOL, HVACMode.HEAT, HVACMode.HEAT_COOL):
                     self._last_active_hvac_mode = HVACMode(last_state.state)
 
             saved_last_active = last_state.attributes.get("last_active_hvac_mode")
-            if saved_last_active in (HVACMode.COOL, HVACMode.HEAT):
+            if saved_last_active in (HVACMode.COOL, HVACMode.HEAT, HVACMode.HEAT_COOL):
                 self._last_active_hvac_mode = HVACMode(saved_last_active)
+
+            saved_fan_mode = last_state.attributes.get("fan_mode")
+            if saved_fan_mode in ("on", "auto"):
+                self._user_fan_mode = saved_fan_mode
 
             # 1. Restore Preset Mode FIRST
             prev_preset = last_state.attributes.get("preset_mode")
@@ -516,6 +520,37 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                             self._preset_mode = PRESET_COMFORT
                 except ValueError:
                     pass
+
+            # Restore Dual Setpoints for HEAT_COOL
+            prev_low = last_state.attributes.get("target_temp_low")
+            if prev_low is None:
+                prev_low = last_state.attributes.get("target_temperature_low")
+            if prev_low is not None:
+                try:
+                    val_low = float(prev_low)
+                    if 60.0 <= val_low <= 85.0:
+                        self._target_temperature_low = val_low
+                except (ValueError, TypeError):
+                    pass
+
+            prev_high = last_state.attributes.get("target_temp_high")
+            if prev_high is None:
+                prev_high = last_state.attributes.get("target_temperature_high")
+            if prev_high is not None:
+                try:
+                    val_high = float(prev_high)
+                    if 60.0 <= val_high <= 85.0:
+                        self._target_temperature_high = val_high
+                except (ValueError, TypeError):
+                    pass
+
+            min_gap = max(3.0, self._cooling_swing + self._heating_swing)
+            if self._target_temperature_high - self._target_temperature_low < min_gap:
+                if self._target_temperature_low + min_gap <= 85.0:
+                    self._target_temperature_high = self._target_temperature_low + min_gap
+                else:
+                    self._target_temperature_high = 85.0
+                    self._target_temperature_low = max(60.0, 85.0 - min_gap)
 
         # Final sanity check: ensure target temperature is strictly within 60.0°F - 85.0°F
         if self._target_temperature < 60.0 or self._target_temperature > 85.0:
@@ -666,7 +701,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
         old_mode = self._hvac_mode
         self._hvac_mode = hvac_mode
-        if hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
+        if hvac_mode in (HVACMode.COOL, HVACMode.HEAT, HVACMode.HEAT_COOL):
             self._last_active_hvac_mode = hvac_mode
 
         if old_mode != hvac_mode:
@@ -724,10 +759,23 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         old_preset = self._preset_mode
         self._preset_mode = PRESET_NONE
 
+        min_gap = max(3.0, self._cooling_swing + self._heating_swing)
         if temp_low is not None:
-            self._target_temperature_low = max(60.0, min(85.0, round(float(temp_low), 1)))
+            self._target_temperature_low = max(60.0, min(85.0 - min_gap, round(float(temp_low), 1)))
         if temp_high is not None:
-            self._target_temperature_high = max(60.0, min(85.0, round(float(temp_high), 1)))
+            self._target_temperature_high = max(60.0 + min_gap, min(85.0, round(float(temp_high), 1)))
+
+        if self._target_temperature_high - self._target_temperature_low < min_gap:
+            if temp_low is not None and temp_high is None:
+                self._target_temperature_high = min(85.0, self._target_temperature_low + min_gap)
+            elif temp_high is not None and temp_low is None:
+                self._target_temperature_low = max(60.0, self._target_temperature_high - min_gap)
+            else:
+                if self._target_temperature_low + min_gap <= 85.0:
+                    self._target_temperature_high = self._target_temperature_low + min_gap
+                else:
+                    self._target_temperature_high = 85.0
+                    self._target_temperature_low = max(60.0, 85.0 - min_gap)
 
         if temp is not None:
             new_temp = max(60.0, min(85.0, round(float(temp), 1)))
@@ -775,22 +823,41 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 self._errand_timer_cancel = None
                 self._errand_timer_end = None
 
-        # Update setpoints from preset targets
-        if preset_mode in self._preset_targets.get(HVACMode.COOL, {}):
-            self._target_temperature_high = max(60.0, min(85.0, self._preset_targets[HVACMode.COOL][preset_mode]))
-        if preset_mode in self._preset_targets.get(HVACMode.HEAT, {}):
-            self._target_temperature_low = max(60.0, min(85.0, self._preset_targets[HVACMode.HEAT][preset_mode]))
+        # Update setpoints from preset targets with HEAT_COOL gap safety
+        min_gap = max(3.0, self._cooling_swing + self._heating_swing)
+        if preset_mode == PRESET_BOOST and self._hvac_mode == HVACMode.HEAT_COOL:
+            # Define Boost in HEAT_COOL: prioritize current demand or season
+            if self._last_active_hvac_mode == HVACMode.HEAT or (self._current_temperature is not None and self._current_temperature < 70.0):
+                self._target_temperature_low = 72.0
+                self._target_temperature_high = max(72.0 + min_gap, 76.0)
+                self._target_temperature = self._target_temperature_low
+            else:
+                self._target_temperature_high = 68.0
+                self._target_temperature_low = min(68.0 - min_gap, 64.0)
+                self._target_temperature = self._target_temperature_high
+        else:
+            if preset_mode in self._preset_targets.get(HVACMode.COOL, {}):
+                self._target_temperature_high = max(60.0, min(85.0, self._preset_targets[HVACMode.COOL][preset_mode]))
+            if preset_mode in self._preset_targets.get(HVACMode.HEAT, {}):
+                self._target_temperature_low = max(60.0, min(85.0, self._preset_targets[HVACMode.HEAT][preset_mode]))
 
-        if self._hvac_mode == HVACMode.COOL:
-            if preset_mode in self._preset_targets[HVACMode.COOL]:
-                raw_target = self._preset_targets[HVACMode.COOL][preset_mode]
-                self._target_temperature = max(60.0, min(85.0, raw_target))
-        elif self._hvac_mode == HVACMode.HEAT:
-            if preset_mode in self._preset_targets[HVACMode.HEAT]:
-                raw_target = self._preset_targets[HVACMode.HEAT][preset_mode]
-                self._target_temperature = max(60.0, min(85.0, raw_target))
-        elif self._hvac_mode == HVACMode.HEAT_COOL:
-            self._target_temperature = self._target_temperature_high
+            if self._target_temperature_high - self._target_temperature_low < min_gap:
+                if self._target_temperature_low + min_gap <= 85.0:
+                    self._target_temperature_high = self._target_temperature_low + min_gap
+                else:
+                    self._target_temperature_high = 85.0
+                    self._target_temperature_low = max(60.0, 85.0 - min_gap)
+
+            if self._hvac_mode == HVACMode.COOL:
+                if preset_mode in self._preset_targets[HVACMode.COOL]:
+                    raw_target = self._preset_targets[HVACMode.COOL][preset_mode]
+                    self._target_temperature = max(60.0, min(85.0, raw_target))
+            elif self._hvac_mode == HVACMode.HEAT:
+                if preset_mode in self._preset_targets[HVACMode.HEAT]:
+                    raw_target = self._preset_targets[HVACMode.HEAT][preset_mode]
+                    self._target_temperature = max(60.0, min(85.0, raw_target))
+            elif self._hvac_mode == HVACMode.HEAT_COOL:
+                self._target_temperature = self._target_temperature_high
 
         if old_preset != preset_mode:
             _LOGGER.info(
@@ -1345,6 +1412,22 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     self.async_write_ha_state()
                     return
 
+                # Reversing valve & compressor protection: Never go straight from HEATING to COOLING
+                if self._hvac_action == HVACAction.HEATING:
+                    if self._last_cycle_start and (now - self._last_cycle_start) < min_cycle:
+                        return
+                    self._last_cycle_stop = now
+                    run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                    self._hvac_action = HVACAction.IDLE
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC STOP] Stopping HEATING cycle before mode switchover. Runtime: %dm %ds. Entering anti-short-cycle dwell.",
+                        run_sec // 60,
+                        run_sec % 60,
+                    )
+                    await self._async_call_physical_off()
+                    self.async_write_ha_state()
+                    return
+
                 if self._last_cycle_stop and (now - self._last_cycle_stop) < min_cycle:
                     remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_stop).total_seconds())
                     _LOGGER.info(
@@ -1373,6 +1456,22 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 await self._async_call_physical_cooling(physical_cool_target)
 
             elif self._current_temperature <= heat_activate:
+                # Reversing valve & compressor protection: Never go straight from COOLING to HEATING
+                if self._hvac_action == HVACAction.COOLING:
+                    if self._last_cycle_start and (now - self._last_cycle_start) < min_cycle:
+                        return
+                    self._last_cycle_stop = now
+                    run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                    self._hvac_action = HVACAction.IDLE
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC STOP] Stopping COOLING cycle before mode switchover. Runtime: %dm %ds. Entering anti-short-cycle dwell.",
+                        run_sec // 60,
+                        run_sec % 60,
+                    )
+                    await self._async_call_physical_off()
+                    self.async_write_ha_state()
+                    return
+
                 if self._last_cycle_stop and (now - self._last_cycle_stop) < min_cycle:
                     remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_stop).total_seconds())
                     _LOGGER.info(
@@ -1505,8 +1604,28 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     async def _async_call_physical_safe_handoff(self, target_temp: float) -> None:
         """Engage Tier 3 failsafe: Hand over normal setpoint with 0 offset to physical thermostat."""
-        desired_mode = self._hvac_mode if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT) else HVACMode.OFF
-        safe_target = max(60.0, min(85.0, round(target_temp, 1)))
+        if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
+            desired_mode = self._hvac_mode
+            safe_target = max(60.0, min(85.0, round(target_temp, 1)))
+        elif self._hvac_mode == HVACMode.HEAT_COOL:
+            # In HEAT_COOL, hand off in last active direction, or cool above midpoint and heat below it
+            if self._last_active_hvac_mode == HVACMode.HEAT:
+                desired_mode = HVACMode.HEAT
+                safe_target = max(60.0, min(85.0, round(self._target_temperature_low, 1)))
+            elif self._last_active_hvac_mode == HVACMode.COOL:
+                desired_mode = HVACMode.COOL
+                safe_target = max(60.0, min(85.0, round(self._target_temperature_high, 1)))
+            else:
+                midpoint = (self._target_temperature_low + self._target_temperature_high) / 2.0
+                if self._current_temperature is not None and self._current_temperature < midpoint:
+                    desired_mode = HVACMode.HEAT
+                    safe_target = max(60.0, min(85.0, round(self._target_temperature_low, 1)))
+                else:
+                    desired_mode = HVACMode.COOL
+                    safe_target = max(60.0, min(85.0, round(self._target_temperature_high, 1)))
+        else:
+            desired_mode = HVACMode.OFF
+            safe_target = max(60.0, min(85.0, round(target_temp, 1)))
         self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
 
         await self.hass.services.async_call(
@@ -1541,12 +1660,12 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             )
             self._last_sent_physical_mode = HVACMode.OFF
 
-        # When idle, if the separate fan entity was left on continuous circulation, switch it off back to Auto
-        if self._fan_entity:
+        # When idle, only turn off the fan entity if the user hasn't explicitly set fan mode to 'on'
+        if self._fan_entity and self._user_fan_mode != "on":
             fan_state = self.hass.states.get(self._fan_entity)
             if fan_state and fan_state.state != "off":
                 _LOGGER.info(
-                    "[TEST LOG][FAN STOP] Switching circulation fan '%s' from %s to OFF/Auto. Reason: HVAC system is idle or off.",
+                    "[TEST LOG][FAN STOP] Switching circulation fan '%s' from %s to OFF/Auto. Reason: HVAC system is idle or off and fan mode is Auto.",
                     self._fan_entity,
                     fan_state.state,
                 )
@@ -1814,7 +1933,41 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 ):
                     new_user_target = max(60.0, min(85.0, round(new_target, 1)))
 
-                    if abs(new_user_target - self._target_temperature) >= 0.5:
+                    if self._hvac_mode == HVACMode.HEAT_COOL:
+                        min_gap = max(3.0, self._cooling_swing + self._heating_swing)
+                        if new_state.state == HVACMode.COOL or self._hvac_action == HVACAction.COOLING:
+                            self._target_temperature_high = new_user_target
+                            if self._target_temperature_high - self._target_temperature_low < min_gap:
+                                self._target_temperature_low = max(60.0, self._target_temperature_high - min_gap)
+                        elif new_state.state == HVACMode.HEAT or self._hvac_action == HVACAction.HEATING:
+                            self._target_temperature_low = new_user_target
+                            if self._target_temperature_high - self._target_temperature_low < min_gap:
+                                self._target_temperature_high = min(85.0, self._target_temperature_low + min_gap)
+                        else:
+                            midpoint = (self._target_temperature_low + self._target_temperature_high) / 2.0
+                            if new_user_target >= midpoint:
+                                self._target_temperature_high = new_user_target
+                                if self._target_temperature_high - self._target_temperature_low < min_gap:
+                                    self._target_temperature_low = max(60.0, self._target_temperature_high - min_gap)
+                            else:
+                                self._target_temperature_low = new_user_target
+                                if self._target_temperature_high - self._target_temperature_low < min_gap:
+                                    self._target_temperature_high = min(85.0, self._target_temperature_low + min_gap)
+                        self._target_temperature = self._target_temperature_high
+                        self._preset_mode = PRESET_NONE
+                        self._physical_last_reported_target = new_target
+                        self._ignore_physical_target_until = now + timedelta(seconds=15)
+                        _LOGGER.info(
+                            "[TEST LOG][STATE CHANGE] Target range changed to %.1f°F - %.1f°F (Preset '%s' cleared to NONE). Reason: User physically turned wall thermostat dial to %.1f°F in HEAT_COOL mode.",
+                            self._target_temperature_low,
+                            self._target_temperature_high,
+                            self._preset_mode.upper(),
+                            new_target,
+                        )
+                        await self._async_evaluate_regulation()
+                        self.async_write_ha_state()
+                        self._notify_switch()
+                    elif abs(new_user_target - self._target_temperature) >= 0.5:
                         _LOGGER.info(
                             "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: User physically turned wall thermostat dial to %.1f°F.",
                             self._target_temperature,

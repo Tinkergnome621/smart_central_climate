@@ -306,7 +306,25 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Modify temperature, humidity, fan, and plenum sensors."""
+        optional_sensor_fields = [
+            (CONF_HUMIDITY_SENSOR, "sensor"),
+            (CONF_FAN_ENTITY, "fan"),
+            (CONF_PRESENCE_SENSOR, ["person", "device_tracker", "binary_sensor", "zone"]),
+            (CONF_RETURN_TEMP_SENSOR, "sensor"),
+            (CONF_RETURN_HUMIDITY_SENSOR, "sensor"),
+            (CONF_SUPPLY_TEMP_SENSOR, "sensor"),
+            (CONF_SUPPLY_HUMIDITY_SENSOR, "sensor"),
+        ]
+
         if user_input is not None:
+            # Explicitly remove cleared optional sensors so they don't persist in options
+            for conf_key, _ in optional_sensor_fields:
+                val = user_input.get(conf_key)
+                if not val:
+                    self._options.pop(conf_key, None)
+                    user_input.pop(conf_key, None)
+                else:
+                    self._options[conf_key] = val
             self._options.update(user_input)
             return self.async_create_entry(title="", data=self._options)
 
@@ -319,16 +337,6 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
                 selector.EntitySelectorConfig(domain=["sensor", "input_number"])
             ),
         }
-
-        optional_sensor_fields = [
-            (CONF_HUMIDITY_SENSOR, "sensor"),
-            (CONF_FAN_ENTITY, "fan"),
-            (CONF_PRESENCE_SENSOR, ["person", "device_tracker", "binary_sensor", "zone"]),
-            (CONF_RETURN_TEMP_SENSOR, "sensor"),
-            (CONF_RETURN_HUMIDITY_SENSOR, "sensor"),
-            (CONF_SUPPLY_TEMP_SENSOR, "sensor"),
-            (CONF_SUPPLY_HUMIDITY_SENSOR, "sensor"),
-        ]
 
         for conf_key, domain in optional_sensor_fields:
             val = cfg.get(conf_key)
