@@ -737,10 +737,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             if hvac_mode == HVACMode.HEAT_COOL:
                 min_gap = max(3.0, self._cooling_swing + self._heating_swing)
                 if self._preset_mode == PRESET_BOOST:
-                    is_heat_season = dt_util.now().month in (10, 11, 12, 1, 2, 3, 4)
-                    if self._last_conditioning_direction == HVACMode.HEAT or (
-                        self._last_conditioning_direction is None and is_heat_season
-                    ) or (self._current_temperature is not None and self._current_temperature < 70.0):
+                    if self._last_conditioning_direction == HVACMode.HEAT:
+                        boost_heat = True
+                    elif self._last_conditioning_direction == HVACMode.COOL:
+                        boost_heat = False
+                    else:
+                        is_heat_season = dt_util.now().month in (10, 11, 12, 1, 2, 3, 4)
+                        boost_heat = is_heat_season if self._current_temperature is None else (self._current_temperature < 70.0)
+
+                    if boost_heat:
                         self._target_temperature_low = 72.0
                         self._target_temperature_high = max(72.0 + min_gap, 76.0)
                         self._target_temperature = self._target_temperature_low
@@ -857,10 +862,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         min_gap = max(3.0, self._cooling_swing + self._heating_swing)
         if preset_mode == PRESET_BOOST and self._hvac_mode == HVACMode.HEAT_COOL:
             # Define Boost in HEAT_COOL: prioritize current demand, last conditioning direction, or season
-            is_heat_season = dt_util.now().month in (10, 11, 12, 1, 2, 3, 4)
-            if self._last_conditioning_direction == HVACMode.HEAT or (
-                self._last_conditioning_direction is None and is_heat_season
-            ) or (self._current_temperature is not None and self._current_temperature < 70.0):
+            if self._last_conditioning_direction == HVACMode.HEAT:
+                boost_heat = True
+            elif self._last_conditioning_direction == HVACMode.COOL:
+                boost_heat = False
+            else:
+                is_heat_season = dt_util.now().month in (10, 11, 12, 1, 2, 3, 4)
+                boost_heat = is_heat_season if self._current_temperature is None else (self._current_temperature < 70.0)
+
+            if boost_heat:
                 self._target_temperature_low = 72.0
                 self._target_temperature_high = max(72.0 + min_gap, 76.0)
                 self._target_temperature = self._target_temperature_low
