@@ -273,6 +273,9 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._hvac_mode: HVACMode = HVACMode.COOL
         self._hvac_action: HVACAction = HVACAction.IDLE
         self._last_active_hvac_mode: HVACMode = HVACMode.COOL  # Restores correct mode on turn_on
+        self._last_conditioning_direction: str = (
+            HVACMode.HEAT if dt_util.now().month in (10, 11, 12, 1, 2, 3, 4) else HVACMode.COOL
+        )
         self._target_temperature: float = self._preset_targets[HVACMode.COOL][PRESET_COMFORT]
         self._target_temperature_low: float = self._preset_targets[HVACMode.HEAT][PRESET_COMFORT]
         self._target_temperature_high: float = self._preset_targets[HVACMode.COOL][PRESET_COMFORT]
@@ -360,15 +363,11 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
     @property
     def target_temperature_low(self) -> float | None:
         """Return the minimum target temperature in range mode."""
-        if self._preset_mode in self._preset_targets.get(HVACMode.HEAT, {}):
-            return self._preset_targets[HVACMode.HEAT][self._preset_mode]
         return self._target_temperature_low
 
     @property
     def target_temperature_high(self) -> float | None:
         """Return the maximum target temperature in range mode."""
-        if self._preset_mode in self._preset_targets.get(HVACMode.COOL, {}):
-            return self._preset_targets[HVACMode.COOL][self._preset_mode]
         return self._target_temperature_high
 
     @property
@@ -436,6 +435,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             "remote_sensor": self._temp_sensor,
             "active_sensor_source": self._active_sensor_source,
             "last_active_hvac_mode": self._last_active_hvac_mode,
+            "last_conditioning_direction": self._last_conditioning_direction,
             "target_climate": self._target_climate,
             "wall_thermostat_temperature": wall_temp,
             "wall_thermostat_humidity": wall_hum,
@@ -488,6 +488,10 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             saved_last_active = last_state.attributes.get("last_active_hvac_mode")
             if saved_last_active in (HVACMode.COOL, HVACMode.HEAT, HVACMode.HEAT_COOL):
                 self._last_active_hvac_mode = HVACMode(saved_last_active)
+
+            saved_dir = last_state.attributes.get("last_conditioning_direction")
+            if saved_dir in (HVACMode.COOL, HVACMode.HEAT):
+                self._last_conditioning_direction = saved_dir
 
             saved_fan_mode = last_state.attributes.get("fan_mode")
             if saved_fan_mode in ("on", "auto"):
@@ -730,7 +734,33 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 )
             await self._async_call_physical_off()
         else:
-            if self._preset_mode in self._preset_targets.get(hvac_mode, {}):
+            if hvac_mode == HVACMode.HEAT_COOL:
+                min_gap = max(3.0, self._cooling_swing + self._heating_swing)
+                if self._preset_mode == PRESET_BOOST:
+                    is_heat_season = dt_util.now().month in (10, 11, 12, 1, 2, 3, 4)
+                    if self._last_conditioning_direction == HVACMode.HEAT or (
+                        self._last_conditioning_direction is None and is_heat_season
+                    ) or (self._current_temperature is not None and self._current_temperature < 70.0):
+                        self._target_temperature_low = 72.0
+                        self._target_temperature_high = max(72.0 + min_gap, 76.0)
+                        self._target_temperature = self._target_temperature_low
+                    else:
+                        self._target_temperature_high = 68.0
+                        self._target_temperature_low = min(68.0 - min_gap, 64.0)
+                        self._target_temperature = self._target_temperature_high
+                elif self._preset_mode in SUPPORTED_PRESETS:
+                    if self._preset_mode in self._preset_targets.get(HVACMode.COOL, {}):
+                        self._target_temperature_high = max(60.0, min(85.0, self._preset_targets[HVACMode.COOL][self._preset_mode]))
+                    if self._preset_mode in self._preset_targets.get(HVACMode.HEAT, {}):
+                        self._target_temperature_low = max(60.0, min(85.0, self._preset_targets[HVACMode.HEAT][self._preset_mode]))
+                    if self._target_temperature_high - self._target_temperature_low < min_gap:
+                        if self._target_temperature_low + min_gap <= 85.0:
+                            self._target_temperature_high = self._target_temperature_low + min_gap
+                        else:
+                            self._target_temperature_high = 85.0
+                            self._target_temperature_low = max(60.0, 85.0 - min_gap)
+                    self._target_temperature = self._target_temperature_high
+            elif self._preset_mode in self._preset_targets.get(hvac_mode, {}):
                 raw_target = self._preset_targets[hvac_mode][self._preset_mode]
                 self._target_temperature = max(60.0, min(85.0, raw_target))
             await self._async_evaluate_regulation()
@@ -826,8 +856,11 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # Update setpoints from preset targets with HEAT_COOL gap safety
         min_gap = max(3.0, self._cooling_swing + self._heating_swing)
         if preset_mode == PRESET_BOOST and self._hvac_mode == HVACMode.HEAT_COOL:
-            # Define Boost in HEAT_COOL: prioritize current demand or season
-            if self._last_active_hvac_mode == HVACMode.HEAT or (self._current_temperature is not None and self._current_temperature < 70.0):
+            # Define Boost in HEAT_COOL: prioritize current demand, last conditioning direction, or season
+            is_heat_season = dt_util.now().month in (10, 11, 12, 1, 2, 3, 4)
+            if self._last_conditioning_direction == HVACMode.HEAT or (
+                self._last_conditioning_direction is None and is_heat_season
+            ) or (self._current_temperature is not None and self._current_temperature < 70.0):
                 self._target_temperature_low = 72.0
                 self._target_temperature_high = max(72.0 + min_gap, 76.0)
                 self._target_temperature = self._target_temperature_low
@@ -1540,6 +1573,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     async def _async_call_physical_cooling(self, target_temp: float) -> None:
         """Command physical thermostat to Cool and set safe temperature."""
+        self._last_conditioning_direction = HVACMode.COOL
         safe_target = max(62.0, min(85.0, round(target_temp, 1)))
         self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
 
@@ -1572,6 +1606,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
 
     async def _async_call_physical_heating(self, target_temp: float) -> None:
         """Command physical thermostat to Heat and set safe temperature."""
+        self._last_conditioning_direction = HVACMode.HEAT
         safe_target = max(60.0, min(82.0, round(target_temp, 1)))
         self._ignore_physical_target_until = dt_util.utcnow() + timedelta(seconds=15)
 
@@ -1608,21 +1643,42 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             desired_mode = self._hvac_mode
             safe_target = max(60.0, min(85.0, round(target_temp, 1)))
         elif self._hvac_mode == HVACMode.HEAT_COOL:
-            # In HEAT_COOL, hand off in last active direction, or cool above midpoint and heat below it
-            if self._last_active_hvac_mode == HVACMode.HEAT:
+            # In HEAT_COOL, hand off in last active conditioning direction (HEAT or COOL)
+            if self._last_conditioning_direction == HVACMode.HEAT:
                 desired_mode = HVACMode.HEAT
                 safe_target = max(60.0, min(85.0, round(self._target_temperature_low, 1)))
-            elif self._last_active_hvac_mode == HVACMode.COOL:
+            elif self._last_conditioning_direction == HVACMode.COOL:
                 desired_mode = HVACMode.COOL
                 safe_target = max(60.0, min(85.0, round(self._target_temperature_high, 1)))
             else:
+                # Direction unknown: check physical wall thermostat's current temperature against midpoint
                 midpoint = (self._target_temperature_low + self._target_temperature_high) / 2.0
-                if self._current_temperature is not None and self._current_temperature < midpoint:
-                    desired_mode = HVACMode.HEAT
-                    safe_target = max(60.0, min(85.0, round(self._target_temperature_low, 1)))
+                phys_state = self.hass.states.get(self._target_climate) if self._target_climate else None
+                phys_temp = None
+                if phys_state and phys_state.attributes.get("current_temperature") is not None:
+                    try:
+                        phys_temp = float(phys_state.attributes["current_temperature"])
+                    except (ValueError, TypeError):
+                        pass
+
+                temp_to_check = self._current_temperature if self._current_temperature is not None else phys_temp
+
+                if temp_to_check is not None:
+                    if temp_to_check < midpoint:
+                        desired_mode = HVACMode.HEAT
+                        safe_target = max(60.0, min(85.0, round(self._target_temperature_low, 1)))
+                    else:
+                        desired_mode = HVACMode.COOL
+                        safe_target = max(60.0, min(85.0, round(self._target_temperature_high, 1)))
                 else:
-                    desired_mode = HVACMode.COOL
-                    safe_target = max(60.0, min(85.0, round(self._target_temperature_high, 1)))
+                    # Both sensors completely dead and wall temp unknown: default to HEAT during cold months (Oct-Apr)
+                    now_month = dt_util.now().month
+                    if now_month in (10, 11, 12, 1, 2, 3, 4):
+                        desired_mode = HVACMode.HEAT
+                        safe_target = max(60.0, min(85.0, round(self._target_temperature_low, 1)))
+                    else:
+                        desired_mode = HVACMode.COOL
+                        safe_target = max(60.0, min(85.0, round(self._target_temperature_high, 1)))
         else:
             desired_mode = HVACMode.OFF
             safe_target = max(60.0, min(85.0, round(target_temp, 1)))
