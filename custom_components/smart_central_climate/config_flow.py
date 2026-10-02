@@ -14,6 +14,11 @@ from .const import (
     CONF_FAN_ENTITY,
     CONF_TEMP_SENSOR,
     CONF_PRESENCE_SENSOR,
+    CONF_HUMIDITY_SENSOR,
+    CONF_SUPPLY_TEMP_SENSOR,
+    CONF_SUPPLY_HUMIDITY_SENSOR,
+    CONF_RETURN_TEMP_SENSOR,
+    CONF_RETURN_HUMIDITY_SENSOR,
     CONF_COOLING_SWING,
     CONF_HEATING_SWING,
     CONF_COOLING_OFFSET,
@@ -132,14 +137,29 @@ class SmartCentralClimateConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_TARGET_CLIMATE): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="climate")
                 ),
-                vol.Optional(CONF_FAN_ENTITY): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain="fan")
-                ),
                 vol.Required(CONF_TEMP_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["sensor", "input_number"])
                 ),
+                vol.Optional(CONF_HUMIDITY_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Optional(CONF_FAN_ENTITY): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="fan")
+                ),
                 vol.Optional(CONF_PRESENCE_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["person", "device_tracker", "binary_sensor", "zone"])
+                ),
+                vol.Optional(CONF_RETURN_TEMP_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Optional(CONF_RETURN_HUMIDITY_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Optional(CONF_SUPPLY_TEMP_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
+                ),
+                vol.Optional(CONF_SUPPLY_HUMIDITY_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor")
                 ),
             }
         )
@@ -279,8 +299,49 @@ class SmartCentralClimateOptionsFlow(config_entries.OptionsFlow):
         self._options = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_menu(
             step_id="init",
-            menu_options=["temperatures", "weekday_schedule", "weekend_schedule", "presence_timers", "notifications"],
+            menu_options=["temperatures", "sensors", "weekday_schedule", "weekend_schedule", "presence_timers", "notifications"],
         )
+
+    async def async_step_sensors(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Modify temperature, humidity, fan, and plenum sensors."""
+        if user_input is not None:
+            self._options.update(user_input)
+            return self.async_create_entry(title="", data=self._options)
+
+        cfg = self._options
+        schema_dict: dict[Any, Any] = {
+            vol.Required(
+                CONF_TEMP_SENSOR,
+                default=cfg.get(CONF_TEMP_SENSOR),
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["sensor", "input_number"])
+            ),
+        }
+
+        optional_sensor_fields = [
+            (CONF_HUMIDITY_SENSOR, "sensor"),
+            (CONF_FAN_ENTITY, "fan"),
+            (CONF_PRESENCE_SENSOR, ["person", "device_tracker", "binary_sensor", "zone"]),
+            (CONF_RETURN_TEMP_SENSOR, "sensor"),
+            (CONF_RETURN_HUMIDITY_SENSOR, "sensor"),
+            (CONF_SUPPLY_TEMP_SENSOR, "sensor"),
+            (CONF_SUPPLY_HUMIDITY_SENSOR, "sensor"),
+        ]
+
+        for conf_key, domain in optional_sensor_fields:
+            val = cfg.get(conf_key)
+            if val:
+                schema_dict[vol.Optional(conf_key, default=val)] = selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=domain)
+                )
+            else:
+                schema_dict[vol.Optional(conf_key)] = selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=domain)
+                )
+
+        return self.async_show_form(step_id="sensors", data_schema=vol.Schema(schema_dict))
 
     async def async_step_temperatures(
         self, user_input: dict[str, Any] | None = None

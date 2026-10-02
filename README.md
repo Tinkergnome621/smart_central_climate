@@ -4,8 +4,16 @@ A custom Home Assistant integration designed specifically for **Central A/C and 
 
 ---
 
-## Key Features
-
+* 🔄 **Dual Setpoint Range Mode (`Heat/Cool`) & Deadband Regulation (v1.5.0):**
+  * Seamlessly toggle between `Heat/Cool`, `Cool`, `Heat`, and `Off`.
+  * Support for dual slider range controls (`target_temp_low` and `target_temp_high`) with configurable deadband buffers across all presets (Eco, Comfort, Sleep, Away, Vacation).
+* 🌬️ **Plenum Probes & Real-Time Delta-T Diagnostics (v1.5.0):**
+  * **Input (Return Air):** Connect duct probe sensors for Return Air Temperature and Humidity.
+  * **Output (Supply Plenum):** Connect plenum duct probe sensors for Supply Air Temperature and Humidity.
+  * **Delta-T Split Calculation:** Automatically calculates live temperature drop/rise across evaporator coils or furnace heat exchanger (`supply_temp - return_temp`), giving real-time visibility into HVAC system efficiency.
+  * **Indoor Humidity Support:** Connect your indoor hygrometer to track relative humidity directly on the thermostat card.
+* 🌀 **Dedicated Blower Fan Toggle Switch (v1.5.0):**
+  * Direct fan toggle controls (`Auto` / `On`) exposed on the climate entity and dashboard card.
 * 🛡️ **3-Tier Sensor Safety & Hardware Failover:**
   * **Tier 1 (Normal):** Regulates HVAC based on your primary remote sensor (e.g. `sensor.average_house_temperature`).
   * **Tier 2 (Auto-Failover):** If your remote sensor ever goes `unavailable`, `unknown`, or stops reporting for >45 minutes, the integration automatically falls back to reading ambient temperature directly from your physical thermostat's built-in probe.

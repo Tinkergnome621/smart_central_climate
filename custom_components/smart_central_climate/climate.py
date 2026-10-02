@@ -23,6 +23,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_TEMPERATURE,
+    ATTR_TARGET_TEMP_LOW,
+    ATTR_TARGET_TEMP_HIGH,
     CONF_NAME,
     STATE_HOME,
     STATE_NOT_HOME,
@@ -63,6 +65,11 @@ from .const import (
     CONF_IMMUNITY_DURATION,
     CONF_MIN_CYCLE_DURATION,
     CONF_PRESENCE_SENSOR,
+    CONF_HUMIDITY_SENSOR,
+    CONF_RETURN_TEMP_SENSOR,
+    CONF_RETURN_HUMIDITY_SENSOR,
+    CONF_SUPPLY_TEMP_SENSOR,
+    CONF_SUPPLY_HUMIDITY_SENSOR,
     CONF_SLEEP_COOL,
     CONF_SLEEP_HEAT,
     CONF_TARGET_CLIMATE,
@@ -173,7 +180,7 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         | ClimateEntityFeature.TURN_ON
         | ClimateEntityFeature.TURN_OFF
     )
-    _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT]
+    _attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL, HVACMode.HEAT, HVACMode.HEAT_COOL]
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the climate entity."""
@@ -190,11 +197,23 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         # Merge entry data and options for runtime configuration
         cfg = {**entry.data, **entry.options}
 
-        # Target Hardware Entities
+        # Target Hardware Entities & Optional Diagnostic Sensors
         self._target_climate = cfg[CONF_TARGET_CLIMATE]
         self._fan_entity = cfg.get(CONF_FAN_ENTITY)
         self._temp_sensor = cfg[CONF_TEMP_SENSOR]
         self._presence_sensor = cfg.get(CONF_PRESENCE_SENSOR)
+        self._humidity_sensor = cfg.get(CONF_HUMIDITY_SENSOR)
+        self._supply_temp_sensor = cfg.get(CONF_SUPPLY_TEMP_SENSOR)
+        self._supply_humidity_sensor = cfg.get(CONF_SUPPLY_HUMIDITY_SENSOR)
+        self._return_temp_sensor = cfg.get(CONF_RETURN_TEMP_SENSOR)
+        self._return_humidity_sensor = cfg.get(CONF_RETURN_HUMIDITY_SENSOR)
+
+        # Live Sensor Readings for UI and Diagnostics
+        self._current_humidity: float | None = None
+        self._supply_temperature: float | None = None
+        self._supply_humidity: float | None = None
+        self._return_temperature: float | None = None
+        self._return_humidity: float | None = None
 
         # Hysteresis, Offsets, Timers & Safety
         self._cooling_swing = float(cfg.get(CONF_COOLING_SWING, DEFAULT_COOLING_SWING))
@@ -255,6 +274,8 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         self._hvac_action: HVACAction = HVACAction.IDLE
         self._last_active_hvac_mode: HVACMode = HVACMode.COOL  # Restores correct mode on turn_on
         self._target_temperature: float = self._preset_targets[HVACMode.COOL][PRESET_COMFORT]
+        self._target_temperature_low: float = self._preset_targets[HVACMode.HEAT][PRESET_COMFORT]
+        self._target_temperature_high: float = self._preset_targets[HVACMode.COOL][PRESET_COMFORT]
         self._preset_mode: str = PRESET_COMFORT
         self._current_temperature: float | None = None
         self._active_sensor_source: str = "remote"  # "remote", "fallback_physical", or "emergency"
@@ -291,6 +312,21 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         return False
 
     @property
+    def supported_features(self) -> ClimateEntityFeature:
+        """Return the list of supported features."""
+        features = (
+            ClimateEntityFeature.TARGET_TEMPERATURE
+            | ClimateEntityFeature.PRESET_MODE
+            | ClimateEntityFeature.TURN_ON
+            | ClimateEntityFeature.TURN_OFF
+        )
+        if self._hvac_mode == HVACMode.HEAT_COOL:
+            features |= ClimateEntityFeature.TARGET_TEMPERATURE_RANGE
+        if self._fan_entity:
+            features |= ClimateEntityFeature.FAN_MODE
+        return features
+
+    @property
     def preset_modes(self) -> list[str]:
         """Available preset modes."""
         return SUPPORTED_PRESETS
@@ -321,6 +357,52 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         return self._target_temperature
 
     @property
+    def target_temperature_low(self) -> float | None:
+        """Return the minimum target temperature in range mode."""
+        if self._preset_mode in self._preset_targets.get(HVACMode.HEAT, {}):
+            return self._preset_targets[HVACMode.HEAT][self._preset_mode]
+        return self._target_temperature_low
+
+    @property
+    def target_temperature_high(self) -> float | None:
+        """Return the maximum target temperature in range mode."""
+        if self._preset_mode in self._preset_targets.get(HVACMode.COOL, {}):
+            return self._preset_targets[HVACMode.COOL][self._preset_mode]
+        return self._target_temperature_high
+
+    @property
+    def current_humidity(self) -> float | None:
+        """Return current indoor humidity."""
+        return self._current_humidity
+
+    @property
+    def fan_modes(self) -> list[str] | None:
+        """Return list of supported fan modes."""
+        if self._fan_entity:
+            return ["auto", "on"]
+        return None
+
+    @property
+    def fan_mode(self) -> str | None:
+        """Return current fan mode."""
+        if not self._fan_entity:
+            return None
+        fst = self.hass.states.get(self._fan_entity)
+        if fst and fst.state == STATE_ON:
+            return "on"
+        return "auto"
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """Set fan mode (toggle blower between On and Auto)."""
+        if not self._fan_entity:
+            return
+        if fan_mode == "on":
+            await self.hass.services.async_call("fan", "turn_on", {ATTR_ENTITY_ID: self._fan_entity}, blocking=False)
+        else:
+            await self.hass.services.async_call("fan", "turn_off", {ATTR_ENTITY_ID: self._fan_entity}, blocking=False)
+        self.async_write_ha_state()
+
+    @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return extra diagnostic, schedule, and timer attributes."""
         now = dt_util.utcnow()
@@ -332,12 +414,36 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         if self._immunity_timer_end and self._immunity_timer_end > now:
             immunity_remaining = int((self._immunity_timer_end - now).total_seconds() / 60)
 
+        delta_t = None
+        if self._supply_temperature is not None and self._return_temperature is not None:
+            delta_t = round(self._supply_temperature - self._return_temperature, 1)
+
+        fan_curr_state = "n/a"
+        if self._fan_entity:
+            fst = self.hass.states.get(self._fan_entity)
+            if fst:
+                fan_curr_state = fst.state
+
         return {
             "remote_sensor": self._temp_sensor,
             "active_sensor_source": self._active_sensor_source,
             "last_active_hvac_mode": self._last_active_hvac_mode,
             "target_climate": self._target_climate,
             "fan_entity": self._fan_entity,
+            "fan_state": fan_curr_state,
+            "indoor_humidity": self._current_humidity,
+            "humidity_sensor": self._humidity_sensor,
+            "return_air_temperature": self._return_temperature,
+            "return_temp_sensor": self._return_temp_sensor,
+            "return_air_humidity": self._return_humidity,
+            "return_humidity_sensor": self._return_humidity_sensor,
+            "supply_air_temperature": self._supply_temperature,
+            "supply_temp_sensor": self._supply_temp_sensor,
+            "supply_air_humidity": self._supply_humidity,
+            "supply_humidity_sensor": self._supply_humidity_sensor,
+            "delta_t": delta_t,
+            "target_temp_low": self.target_temperature_low,
+            "target_temp_high": self.target_temperature_high,
             "schedule_enabled": self._enable_schedule,
             "last_schedule_slot": self._last_scheduled_slot,
             "vacation_mode": self._preset_mode == PRESET_VACATION,
@@ -471,7 +577,28 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             )
         )
 
-        # 9. Startup hook using HA async_at_started helper (works on both cold boot and live reload)
+        # 9. Track optional sensors (humidity, plenum supply/return probes, and fan)
+        self._update_aux_sensors()
+        aux_entities = [
+            e
+            for e in [
+                self._humidity_sensor,
+                self._supply_temp_sensor,
+                self._supply_humidity_sensor,
+                self._return_temp_sensor,
+                self._return_humidity_sensor,
+                self._fan_entity,
+            ]
+            if e
+        ]
+        if aux_entities:
+            self._listeners.append(
+                async_track_state_change_event(
+                    self.hass, aux_entities, self._async_aux_sensor_changed
+                )
+            )
+
+        # 10. Startup hook using HA async_at_started helper (works on both cold boot and live reload)
         async def _async_startup(_: HomeAssistant) -> None:
             # Unit system check: warn if Home Assistant is configured with metric units
             if self.hass.config.units.temperature_unit != UnitOfTemperature.FAHRENHEIT:
@@ -578,21 +705,38 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
     async def async_set_temperature(self, **kwargs: Any) -> None:
         """Set new target temperature manually."""
         temp = kwargs.get(ATTR_TEMPERATURE)
-        if temp is None:
+        temp_low = kwargs.get(ATTR_TARGET_TEMP_LOW)
+        temp_high = kwargs.get(ATTR_TARGET_TEMP_HIGH)
+
+        if temp is None and temp_low is None and temp_high is None:
             return
 
-        new_temp = max(60.0, min(85.0, round(float(temp), 1)))
-        old_temp = self._target_temperature
         old_preset = self._preset_mode
-        self._target_temperature = new_temp
         self._preset_mode = PRESET_NONE
 
-        _LOGGER.info(
-            "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: Manual user adjustment via UI or service call.",
-            old_temp,
-            new_temp,
-            old_preset.upper(),
-        )
+        if temp_low is not None:
+            self._target_temperature_low = max(60.0, min(85.0, round(float(temp_low), 1)))
+        if temp_high is not None:
+            self._target_temperature_high = max(60.0, min(85.0, round(float(temp_high), 1)))
+
+        if temp is not None:
+            new_temp = max(60.0, min(85.0, round(float(temp), 1)))
+            old_temp = self._target_temperature
+            self._target_temperature = new_temp
+            _LOGGER.info(
+                "[TEST LOG][STATE CHANGE] Target temperature changed from %.1f°F to %.1f°F (Preset '%s' cleared to NONE). Reason: Manual user adjustment via UI or service call.",
+                old_temp,
+                new_temp,
+                old_preset.upper(),
+            )
+        else:
+            _LOGGER.info(
+                "[TEST LOG][STATE CHANGE] Target temperature range changed to %.1f°F - %.1f°F (Preset '%s' cleared to NONE). Reason: Manual range adjustment via UI or service call.",
+                self._target_temperature_low,
+                self._target_temperature_high,
+                old_preset.upper(),
+            )
+
         await self._async_evaluate_regulation()
         self.async_write_ha_state()
         self._notify_switch()
@@ -621,18 +765,31 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                 self._errand_timer_cancel = None
                 self._errand_timer_end = None
 
-        # Update setpoint from preset if mode is Cool or Heat
-        if self._hvac_mode in (HVACMode.COOL, HVACMode.HEAT):
-            if preset_mode in self._preset_targets[self._hvac_mode]:
-                raw_target = self._preset_targets[self._hvac_mode][preset_mode]
+        # Update setpoints from preset targets
+        if preset_mode in self._preset_targets.get(HVACMode.COOL, {}):
+            self._target_temperature_high = max(60.0, min(85.0, self._preset_targets[HVACMode.COOL][preset_mode]))
+        if preset_mode in self._preset_targets.get(HVACMode.HEAT, {}):
+            self._target_temperature_low = max(60.0, min(85.0, self._preset_targets[HVACMode.HEAT][preset_mode]))
+
+        if self._hvac_mode == HVACMode.COOL:
+            if preset_mode in self._preset_targets[HVACMode.COOL]:
+                raw_target = self._preset_targets[HVACMode.COOL][preset_mode]
                 self._target_temperature = max(60.0, min(85.0, raw_target))
+        elif self._hvac_mode == HVACMode.HEAT:
+            if preset_mode in self._preset_targets[HVACMode.HEAT]:
+                raw_target = self._preset_targets[HVACMode.HEAT][preset_mode]
+                self._target_temperature = max(60.0, min(85.0, raw_target))
+        elif self._hvac_mode == HVACMode.HEAT_COOL:
+            self._target_temperature = self._target_temperature_high
 
         if old_preset != preset_mode:
             _LOGGER.info(
-                "[TEST LOG][STATE CHANGE] Preset mode changed from '%s' to '%s'. Target setpoint set to %.1f°F. Reason: %s.",
+                "[TEST LOG][STATE CHANGE] Preset mode changed from '%s' to '%s'. Target setpoint set to %.1f°F (Range: %.1f°F - %.1f°F). Reason: %s.",
                 old_preset.upper(),
                 preset_mode.upper(),
                 self._target_temperature,
+                self._target_temperature_low,
+                self._target_temperature_high,
                 reason,
             )
 
@@ -1159,6 +1316,117 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
                     )
                 await self._async_call_physical_off()
 
+        # --- HEAT_COOL MODE (Dual Range Deadband Regulation) ---
+        elif self._hvac_mode == HVACMode.HEAT_COOL:
+            target_low = self.target_temperature_low or 64.0
+            target_high = self.target_temperature_high or 74.0
+
+            cool_activate = target_high + self._cooling_swing
+            cool_deactivate = target_high
+            heat_activate = target_low - self._heating_swing
+            heat_deactivate = target_low
+
+            if self._current_temperature >= cool_activate:
+                if self._current_temperature <= 65.0:
+                    if self._hvac_action == HVACAction.COOLING:
+                        self._last_cycle_stop = now
+                        self._hvac_action = HVACAction.IDLE
+                    await self._async_call_physical_off()
+                    self.async_write_ha_state()
+                    return
+
+                if self._last_cycle_stop and (now - self._last_cycle_stop) < min_cycle:
+                    remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_stop).total_seconds())
+                    _LOGGER.info(
+                        "[TEST LOG][CYCLE DELAY] Cooling demand active in HEAT_COOL mode, but compressor dwell active (%ds remaining).",
+                        remaining,
+                    )
+                    return
+
+                physical_cool_target = max(target_high - self._cooling_offset, min_limit)
+                if self._hvac_action != HVACAction.COOLING:
+                    self._last_cycle_start = now
+                    old_action = self._hvac_action
+                    self._hvac_action = HVACAction.COOLING
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC START] Starting COOLING cycle in HEAT_COOL mode. Current: %.1f°F >= Activate: %.1f°F, Wall Target: %.1f°F.",
+                        self._current_temperature,
+                        cool_activate,
+                        physical_cool_target,
+                    )
+                    _LOGGER.info(
+                        "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to COOLING. Reason: Room temperature (%.1f°F) >= cooling threshold (%.1f°F).",
+                        str(old_action).upper(),
+                        self._current_temperature,
+                        cool_activate,
+                    )
+                await self._async_call_physical_cooling(physical_cool_target)
+
+            elif self._current_temperature <= heat_activate:
+                if self._last_cycle_stop and (now - self._last_cycle_stop) < min_cycle:
+                    remaining = int(min_cycle.total_seconds() - (now - self._last_cycle_stop).total_seconds())
+                    _LOGGER.info(
+                        "[TEST LOG][CYCLE DELAY] Heating demand active in HEAT_COOL mode, but furnace dwell active (%ds remaining).",
+                        remaining,
+                    )
+                    return
+
+                physical_heat_target = min(target_low + self._heating_offset, max_limit)
+                if self._hvac_action != HVACAction.HEATING:
+                    self._last_cycle_start = now
+                    old_action = self._hvac_action
+                    self._hvac_action = HVACAction.HEATING
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC START] Starting HEATING cycle in HEAT_COOL mode. Current: %.1f°F <= Activate: %.1f°F, Wall Target: %.1f°F.",
+                        self._current_temperature,
+                        heat_activate,
+                        physical_heat_target,
+                    )
+                    _LOGGER.info(
+                        "[TEST LOG][STATE CHANGE] HVAC Action changed from %s to HEATING. Reason: Room temperature (%.1f°F) <= heating threshold (%.1f°F).",
+                        str(old_action).upper(),
+                        self._current_temperature,
+                        heat_activate,
+                    )
+                await self._async_call_physical_heating(physical_heat_target)
+
+            else:
+                # Inside deadband
+                if self._hvac_action == HVACAction.COOLING and self._current_temperature <= cool_deactivate:
+                    if self._last_cycle_start and (now - self._last_cycle_start) < min_cycle:
+                        return
+                    self._last_cycle_stop = now
+                    run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                    self._hvac_action = HVACAction.IDLE
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC STOP] Stopping COOLING in HEAT_COOL mode. Runtime: %dm %ds. Current: %.1f°F <= Setpoint: %.1f°F.",
+                        run_sec // 60,
+                        run_sec % 60,
+                        self._current_temperature,
+                        cool_deactivate,
+                    )
+                    _LOGGER.info("[TEST LOG][STATE CHANGE] HVAC Action changed from COOLING to IDLE. Reason: Target setpoint reached (cooling satisfied).")
+                    await self._async_call_physical_off()
+                elif self._hvac_action == HVACAction.HEATING and self._current_temperature >= heat_deactivate:
+                    if self._last_cycle_start and (now - self._last_cycle_start) < min_cycle:
+                        return
+                    self._last_cycle_stop = now
+                    run_sec = int((now - self._last_cycle_start).total_seconds()) if self._last_cycle_start else 0
+                    self._hvac_action = HVACAction.IDLE
+                    _LOGGER.info(
+                        "[TEST LOG][HVAC STOP] Stopping HEATING in HEAT_COOL mode. Runtime: %dm %ds. Current: %.1f°F >= Setpoint: %.1f°F.",
+                        run_sec // 60,
+                        run_sec % 60,
+                        self._current_temperature,
+                        heat_deactivate,
+                    )
+                    _LOGGER.info("[TEST LOG][STATE CHANGE] HVAC Action changed from HEATING to IDLE. Reason: Target setpoint reached (heating satisfied).")
+                    await self._async_call_physical_off()
+                elif self._hvac_action == HVACAction.IDLE:
+                    physical_state = self.hass.states.get(self._target_climate)
+                    if physical_state and physical_state.state != HVACMode.OFF and self._last_sent_physical_mode != HVACMode.OFF:
+                        await self._async_call_physical_off()
+
         self.async_write_ha_state()
 
     async def _async_call_physical_cooling(self, target_temp: float) -> None:
@@ -1333,10 +1601,19 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
         schedule_str = self._last_scheduled_slot if self._enable_schedule else "Disabled"
         cur_temp_str = f"{self._current_temperature:.1f}°F" if self._current_temperature is not None else "OFFLINE"
 
+        # Optional Sensors & Duct Diagnostics
+        hum_str = f"{self._current_humidity}%" if self._current_humidity is not None else "n/a"
+        ret_temp_str = f"{self._return_temperature}°F" if self._return_temperature is not None else "n/a"
+        ret_hum_str = f"{self._return_humidity}%" if self._return_humidity is not None else "n/a"
+        sup_temp_str = f"{self._supply_temperature}°F" if self._supply_temperature is not None else "n/a"
+        sup_hum_str = f"{self._supply_humidity}%" if self._supply_humidity is not None else "n/a"
+        delta_str = f"{round(self._supply_temperature - self._return_temperature, 1)}°F" if (self._supply_temperature is not None and self._return_temperature is not None) else "n/a"
+
         _LOGGER.info(
             "[TEST LOG][%s]\n"
             "  * Current Temps : Effective=%s (source=%s), Remote Sensor (%s)=%s, Wall Unit (%s)=%s\n"
-            "  * Target Targets: Target Setpoint=%.1f°F, Dynamic Offset=%.1f°F, Wall Setpoint=%s\n"
+            "  * Air Probes    : Return=[%s, %s], Supply=[%s, %s], Delta-T=%s, Room Humidity=%s\n"
+            "  * Target Targets: Target Setpoint=%.1f°F (Range: %.1f°F - %.1f°F), Dynamic Offset=%.1f°F, Wall Setpoint=%s\n"
             "  * System State  : HVAC Mode=%s, HVAC Action=%s, Preset=%s, Blower Fan=%s\n"
             "  * Hardware State: Wall Mode=%s, Wall Action=%s\n"
             "  * Compressor    : %s (min_cycle=%dm)\n"
@@ -1348,7 +1625,15 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             remote_val,
             self._target_climate,
             phys_temp_str,
+            ret_temp_str,
+            ret_hum_str,
+            sup_temp_str,
+            sup_hum_str,
+            delta_str,
+            hum_str,
             self._target_temperature,
+            self._target_temperature_low,
+            self._target_temperature_high,
             offset_val,
             phys_target_str,
             str(self._hvac_mode).upper(),
@@ -1362,6 +1647,32 @@ class SmartCentralClimateEntity(RestoreEntity, ClimateEntity):
             schedule_str,
             presence_str,
         )
+
+    def _read_float_sensor(self, entity_id: str | None) -> float | None:
+        """Helper to safely read a float state from an entity ID."""
+        if not entity_id:
+            return None
+        st = self.hass.states.get(entity_id)
+        if st and st.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            try:
+                return round(float(st.state), 1)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def _update_aux_sensors(self) -> None:
+        """Update live readings for optional sensors."""
+        self._current_humidity = self._read_float_sensor(self._humidity_sensor)
+        self._supply_temperature = self._read_float_sensor(self._supply_temp_sensor)
+        self._supply_humidity = self._read_float_sensor(self._supply_humidity_sensor)
+        self._return_temperature = self._read_float_sensor(self._return_temp_sensor)
+        self._return_humidity = self._read_float_sensor(self._return_humidity_sensor)
+
+    @callback
+    def _async_aux_sensor_changed(self, event: Event) -> None:
+        """Handle changes in optional sensors or fan entity."""
+        self._update_aux_sensors()
+        self.async_write_ha_state()
 
     async def _async_watchdog_check(self, now: datetime) -> None:
         """Periodic 5-minute safety watchdog evaluating sensor health and logging telemetry snapshot."""

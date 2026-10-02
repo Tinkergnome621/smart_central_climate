@@ -8,6 +8,13 @@ CONF_FAN_ENTITY = "fan_entity"
 CONF_TEMP_SENSOR = "temperature_sensor"
 CONF_PRESENCE_SENSOR = "presence_sensor"
 
+# Configuration Keys - Optional Sensors & Diagnostics
+CONF_HUMIDITY_SENSOR = "humidity_sensor"
+CONF_SUPPLY_TEMP_SENSOR = "supply_temp_sensor"
+CONF_SUPPLY_HUMIDITY_SENSOR = "supply_humidity_sensor"
+CONF_RETURN_TEMP_SENSOR = "return_temp_sensor"
+CONF_RETURN_HUMIDITY_SENSOR = "return_humidity_sensor"
+
 # Hysteresis, Timers & Safety
 CONF_COOLING_SWING = "cooling_swing"
 CONF_HEATING_SWING = "heating_swing"

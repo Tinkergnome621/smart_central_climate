@@ -7,9 +7,14 @@
         "data": {
           "name": "Integration Name",
           "target_climate": "Physical Thermostat (e.g. Meross)",
-          "fan_entity": "Blower Fan Entity (Optional, e.g. Matter fan)",
           "temperature_sensor": "Remote Temperature Sensor (e.g. house temp helper)",
-          "presence_sensor": "Presence Sensor / Person (Optional)"
+          "humidity_sensor": "Indoor Humidity Sensor (Optional)",
+          "fan_entity": "Blower Fan Entity (Optional, e.g. Matter fan)",
+          "presence_sensor": "Presence Sensor / Person (Optional)",
+          "return_temp_sensor": "Return Air / Input Temperature (Optional)",
+          "return_humidity_sensor": "Return Air / Input Humidity (Optional)",
+          "supply_temp_sensor": "Supply Air / Output Plenum Temperature (Optional)",
+          "supply_humidity_sensor": "Supply Air / Output Plenum Humidity (Optional)"
         }
       },
       "presets": {
@@ -80,10 +85,25 @@
         "title": "Smart Central Climate Settings",
         "menu_options": {
           "temperatures": "Temperature Presets, Swings & Offsets",
+          "sensors": "Sensors, Fan & Air Plenum Probes",
           "weekday_schedule": "Monday – Friday Schedule (4 Slots)",
           "weekend_schedule": "Saturday – Sunday Schedule (4 Slots)",
           "presence_timers": "Errand Grace Delay & Away Immunity",
           "notifications": "Notification Triggers & Alerts"
+        }
+      },
+      "sensors": {
+        "title": "Sensors, Fan & Air Plenum Probes",
+        "description": "Configure or update your room temperature and humidity sensors, blower fan, and supply/return duct probes.",
+        "data": {
+          "temperature_sensor": "Remote Temperature Sensor (e.g. house temp helper)",
+          "humidity_sensor": "Indoor Humidity Sensor (Optional)",
+          "fan_entity": "Blower Fan Entity (Optional, e.g. Matter fan)",
+          "presence_sensor": "Presence Sensor / Person (Optional)",
+          "return_temp_sensor": "Return Air / Input Temperature (Optional)",
+          "return_humidity_sensor": "Return Air / Input Humidity (Optional)",
+          "supply_temp_sensor": "Supply Air / Output Plenum Temperature (Optional)",
+          "supply_humidity_sensor": "Supply Air / Output Plenum Humidity (Optional)"
         }
       },
       "temperatures": {
